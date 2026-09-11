@@ -1,0 +1,13 @@
+{
+  "name": "mida-localization-app",
+  "version": "0.2.2",
+  "private": true,
+  "scripts": {
+    "prepare:desktop": "node scripts/prepare-desktop.cjs",
+    "desktop": "tauri dev",
+    "release:mac": "tauri build --target universal-apple-darwin --bundles app,dmg"
+  },
+  "devDependencies": {
+    "@tauri-apps/cli": "2.11.4"
+  }
+}

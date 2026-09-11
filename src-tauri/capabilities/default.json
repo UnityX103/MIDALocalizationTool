@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "main-window",
+  "description": "仅允许内置编辑页面的窗口与事件能力",
+  "windows": ["main"],
+  "permissions": ["core:default"]
+}

@@ -1,0 +1,8 @@
+const fs = require('node:fs');
+const path = require('node:path');
+const root = path.resolve(__dirname, '..');
+const destination = path.join(root, 'dist');
+fs.mkdirSync(destination, { recursive: true });
+fs.copyFileSync(path.join(root, 'prototype.html'), path.join(destination, 'index.html'));
+fs.copyFileSync(path.join(root, 'workspace-store.js'), path.join(destination, 'workspace-store.js'));
+fs.copyFileSync(path.join(root, 'preview-player.js'), path.join(destination, 'preview-player.js'));
