@@ -5,6 +5,7 @@
 - 本仓库是独立桌面编辑器，不是 Unity 工程。前端共用 HTML/JavaScript，桌面外壳为 Tauri 2 / Rust，浏览器预览使用 Python。
 - 不要求同机存在 mida2025，不读取它的目录、Excel、存档或 Unity Editor。与 Unity 的交付边界只使用用户选择的 ZIP。
 - 初始工作区为空，不添加示例任务、默认项目、占位语言或虚假版本。已有真实用户工作区可以自动恢复，不为验证空态而删除用户存档。
+- 恢复范围仅限独立编辑器自己的存储。桌面标识 `com.mida.localization.editor`、浏览器数据库 `mida-localization-editor-workspace` 不得复用旧编辑器命名空间，不扫描或自动迁入旧数据；跨编辑器只通过用户选择的 ZIP 导入。
 - 不把用户 ZIP、视频、翻译输出、工作区、备份、依赖缓存或安装包提交到 Git；禁止提交凭据。
 
 ## 修改约定

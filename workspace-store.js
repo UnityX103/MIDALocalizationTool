@@ -20,7 +20,7 @@ class LocalizationWorkspaceStore {
  async open(){
   if(this.database)return;
   this.database=await new Promise((resolve,reject)=>{
-   const request=indexedDB.open('mida-localization-workspace',1);
+   const request=indexedDB.open('mida-localization-editor-workspace',1);
    request.onupgradeneeded=()=>{request.result.createObjectStore('workspace');request.result.createObjectStore('backups');};
    request.onerror=()=>reject(request.error);
    request.onblocked=()=>reject(new Error('本地存储被其他页面占用，请关闭其他编辑器页面后重试'));

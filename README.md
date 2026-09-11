@@ -8,7 +8,7 @@
 
 - 首次启动没有项目、片段、语言任务或示例对话；导入用户选取的 ZIP 后才显示内容。
 - 可以点击「导入 ZIP」或拖入 ZIP。没有任务时不能保存或导出空交付包。
-- 已经导入过的真实工作区继续支持自动恢复；旧版的内置示例工作区不再展示，也不为清空界面删除真实用户数据。
+- 只恢复在本独立编辑器中通过 ZIP 导入并保存的工作区；不自动读取或迁入旧编辑器的真实任务、示例、备份和视频，也不删除旧数据。
 - 本仓库不包含任何业务 ZIP、视频、翻译输出、自动保存工作区或备份。
 
 ## 开发启动
@@ -32,7 +32,7 @@ python3 serve.py --port 8035
 
 Windows 可用 `py -3 serve.py`。默认只监听 `127.0.0.1:8034`，使用 Python 3.9 或以上，不依赖第三方 Python 包。浏览器导出的 ZIP 默认写入本仓库的 `LocalOutput/`，也可用 `--output <目录>` 指定位置。该目录不提交。
 
-浏览器 IndexedDB 与原生 App 工作区相互独立；不同来源地址的浏览器工作区也不会自动共享。需要迁移内容时使用 ZIP，不拷贝浏览器缓存。
+浏览器 IndexedDB 使用独立名称 `mida-localization-editor-workspace`，不读取旧编辑器的数据库。它与原生 App 工作区相互独立；不同来源地址的浏览器工作区也不会自动共享。需要迁移内容时使用 ZIP，不拷贝浏览器缓存。
 
 ## macOS 构建
 
@@ -61,7 +61,7 @@ Windows 桌面代码保留，但本次拆分未生成或验证 Windows 安装包
 - 修改停止 800 毫秒后保存，持续编辑每 5 秒保存；底部「保存」或 Command/Ctrl+S 可立即保存。
 - 保存已确认译文、未确认输入、版本信息及编辑布局；未点「确定」的内容不会被自动确认。
 - 保留最近 10 份本机备份，在「偏好 → 查看自动备份」中查看；这不代替独立设备备份。
-- macOS 原生数据位于 `~/Library/Application Support/com.mida.localization/workspace/`。应用标识保持不变，避免升级丢失已有真实任务；无需将此目录放入 Git。
+- 独立 App 标识为 `com.mida.localization.editor`，macOS 原生数据位于 `~/Library/Application Support/com.mida.localization.editor/workspace/`，不与旧编辑器共享。旧目录 `~/Library/Application Support/com.mida.localization/` 保持原样、不自动读取；旧任务需要通过 ZIP 手动导入。无需将这些目录放入 Git。
 - 导入同一片段的新任务成功后清理旧媒体，新包没有视频也会清理。取消或保存失败保留旧媒体，其他片段不受影响。备份只保留媒体引用，不恢复已删除的视频。
 - 磁盘空间不足、版本冲突或保存失败会显示错误，不假报保存成功。
 
