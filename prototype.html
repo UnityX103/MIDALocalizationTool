@@ -309,6 +309,15 @@ function renderAll(){root.classList.toggle('stacked',state.layout==='上下排�
 function closeDialog(){if(importInProgress)return;const cleanup=dialogCleanup;dialogCleanup=null;if(cleanup)cleanup();find('#loc-overlay').hidden=true;if(restoreFocus&&restoreFocus.isConnected)restoreFocus.focus();}
 function openDialog(title){closeDialog();restoreFocus=document.activeElement;find('#loc-dialog-title').textContent=title;const content=find('#loc-dialog-content');content.replaceChildren();find('#loc-overlay').hidden=false;find('#loc-close').focus();return content;}
 function packet(mode){requireValue(tasks.length&&currentProjectId&&fileVersion&&state.selected.size,'请先导入 ZIP 并勾选交付任务。');exportSequence=Math.max(exportSequence,fileVersion.revision)+1;changeSaved();return {format:'mida-localization',formatVersion:1,projectId:currentProjectId,packageId:localizationUuid(),parentPackageId:currentPackageId,fileVersion:{lineageId:fileVersion.lineageId,revision:exportSequence},exportedAt:new Date().toISOString(),deliveryState:mode,tasks:[...state.selected].sort((left,right)=>left-right).map(index=>({...tasks[index],entries:tasks[index].entries.map(entry=>({...entry}))}))};}
+function isLegacyTaskWideReview(old,entry){
+ const legacyReasons={baseline_missing:'尚无已确认版本，请复核全部对话',baseline_unreadable:'无法读取已确认版本，请复核全部对话',source_revision_changed:'源对话版本已变化，请复核全部对话',translation_revision_changed:'译文版本已变化，请复核全部对话'};
+ return old.review.state==='pending'&&old.issuesAtExport.length>0&&old.issuesAtExport.every(issue=>Object.hasOwn(legacyReasons,issue))&&
+  (!old.review.reason||old.review.reason===old.issuesAtExport.map(issue=>legacyReasons[issue]).join('；'))&&
+  entry.review.state==='confirmed'&&entry.issuesAtExport.length===0&&
+  old.currentSource===entry.currentSource&&old.speakerKey===entry.speakerKey&&
+  old.localizationSourceAtExport===entry.localizationSourceAtExport&&old.translationAtExport===entry.translationAtExport&&
+  old.translation===old.translationAtExport&&entry.translation===entry.translationAtExport&&entry.translation.trim().length>0;
+}
 function planMerge(incoming){
  const index=tasks.findIndex(task=>task.partName===incoming.task.partName&&task.language===incoming.task.language);
  if(index<0)return {index,merged:structuredClone(incoming.task),unchanged:false,stats:{reused:0,changed:0,added:incoming.task.entries.length,removed:0,unfinished:0,conflicts:0}};
@@ -329,6 +338,7 @@ function planMerge(incoming){
   if(draft)stats.unfinished++;
   if(!sameSource){stats.changed++;entry.previousSource=old.currentSource;entry.translation=draft?existingText:(existingText||entry.translation);entry.review={state:'pending',reason:old.currentSource!==entry.currentSource?'新版原文已变化，已保留旧译文供修改':'新版发言人已变化，请检查译文'};return entry;}
   if(targetChanged&&existingText!==entry.translationAtExport){stats.conflicts++;entry.translation=draft?existingText:(existingText||entry.translation);entry.review={state:'pending',reason:'新版也更新了译文，已保留本地内容，请编辑后确定'};return entry;}
+  if(!draft&&isLegacyTaskWideReview(old,entry)){stats.reused++;return entry;}
   if(existingText.trim()){stats.reused++;entry.translation=existingText;entry.review={state:draft?'pending':old.review.state,reason:draft?'保留了尚未确定的编辑内容':old.review.reason};if(old.review.state==='pending'&&!draft)entry.review.reason=old.review.reason||old.issuesAtExport.map(issue=>issueNames[issue]).join(' · ');}
   else {if(draft)entry.translation=existingText;entry.review={state:'pending',reason:'译文仍未完成，请编辑后确定'};}
   return entry;
