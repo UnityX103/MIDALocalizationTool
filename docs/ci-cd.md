@@ -1,49 +1,35 @@
-# CNB 自动检查与发布
+# GitHub 云构建与 CNB 国内镜像
 
-## 内部工具不需要平台发布证书
+## 职责与触发
 
-当前流程不要求 Apple Developer ID、Apple 公证或 Windows Authenticode 证书，也不发布到应用商店。push / PR / 手动 API 触发的源码与编译检查完全不使用签名密钥。
+`GitHub main 推送 → GitHub Mac / Windows 并行构建 → 双端成功 → GitHub 正式版 → CNB 每 30 分钟同步 → 客户端默认 CNB 更新`
 
-现有自动更新的校验密钥与平台证书不同：Mac 和 Windows 共用同一把已有的密钥，不需要每端单独申请或新建。本机已存在的密钥继续保留在仓库外；只有生成可供现有客户端安装的更新包时才使用。若使用另一台发布节点，仍需安全配置该已有密钥，不能靠提交源码把私钥同步过去。Tauri 自动更新不能关闭签名校验，移除它会破坏现有升级能力。
+- 主仓库：<https://github.com/UnityX103/MIDALocalizationTool>，本地 remote 名 `origin`。
+- 国内镜像：<https://cnb.cool/nanzhaigame-xpy/MIDALocalizationTool>，本地 remote 名 `cnb`。客户端现有更新地址、下载地址白名单和默认仓库展示保留 CNB，旧客户端也能收到镜像更新。
+- GitHub `main` push 和手动 workflow_dispatch：GitHub 托管 `macos-14` 构建 Apple Silicon / Intel 通用 DMG 及更新包；`windows-2022` 原生构建 x64 NSIS 安装包。不使用本机安装包，不依赖 CNB 自托管 Mac 节点。
+- PR：同样检查并构建，但不读取签名秘密、不发布，安装包保留为 Actions 附件。
+- 每次构建产物保留 14 天。双端都成功后，新版本自动建立草稿、上传完整产物、发布正式版。同版本已发布时只保留本次 Actions 附件，不覆盖正式安装包；需要对用户发布变更必须升版。
+- CNB `main` 定时任务每 30 分钟运行，也支持 `api_trigger` 手动同步。CNB 不再构建程序，push 不触发同步，避免循环。
 
-## 触发规则
+## 版本与密钥
 
-| 操作 | 自动执行 | 发布权限 |
-| --- | --- | --- |
-| 分支 push / PR | 安装锁定依赖、JS/Python 语法、版本一致性、更新策略、前端生成、Rust 编译 | 不签名、不发布，不使用 Mac 节点 |
-| 推送 `v主.次.补丁` 标签 | 同样的检查 → Mac 通用包 → Windows x64 交叉构建 → 整理与校验 → 草稿上传 → 正式发布 | 专用 Mac 节点 |
-| 其他标签 | 跳过发布 | 不发布 |
+同步修改 package.json、package-lock.json、Tauri 配置、Cargo.toml、Cargo.lock 的应用版本；填写 release-policy.json 的 optional / mandatory 和 docs/release-<版本>.md 用户简述，然后推送 main 即可。无需手动创建发布标签。
 
-按项目规则，当前“检查”不运行或创建单元测试，也不读写真实工作区。编译通过不代表已验证 Windows 实机安装、视频播放或完整 UI 回归；发布前应人工验收这些行为。
+无需 Apple Developer ID、Apple 公证或 Windows 平台证书。现有自动更新仍使用同一把已有校验密钥，保存在 GitHub 仓库 Actions Secret `TAURI_SIGNING_PRIVATE_KEY`；密码非空时配置 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD`。密钥不提交到 Git、不放入构建附件、不传给 CNB。PR 不访问这些 Secret。GitHub 发布只使用该次构建的临时 GITHUB_TOKEN。
 
-## 首次接入（必须完成后才能远端发布）
+## CNB 同步约束
 
-1. 将本次配置及其依赖源码审查后提交到 CNB。当前工作目录尚有之前任务未提交的功能修改；不能只上传 `.cnb.yml`，遗漏 `release-policy.json`、发布脚本、图标或更新模块。不要夹带真实数据、构建缓存、安装包或凭据。
-2. 根组织管理员在「组织设置 → 构建节点」接入一台专用 Mac Runner，标签设为 `mida-release-mac`。配置通过 `namespace: group` 选择该节点。若组织没有该功能或没有在线节点，发布任务无法运行；普通 Linux CI 不受影响。不要未经确认把日常工作电脑注册为可执行远端代码的节点。
-3. Mac Runner 安装 Node.js 22、Python 3.9+、Git、Rust stable、Xcode Command Line Tools、cargo-xwin、LLVM、NSIS，并把 LLVM 和 NSIS 的 bin 加入 Runner 服务的 PATH。Rust targets 需要 `aarch64-apple-darwin`、`x86_64-apple-darwin`、`x86_64-pc-windows-msvc`。服务进程不一定读取交互终端的 shell 配置。
-4. 在该节点仓库外放置原有更新签名私钥，权限 600。默认读取 Runner 用户的 `~/.local/share/mida-localization-release/updater.key`；也可通过 `TAURI_SIGNING_PRIVATE_KEY` 指定绝对文件路径。私钥密码通过受保护的 `TAURI_SIGNING_PRIVATE_KEY_PASSWORD` 注入，不写入 YAML，不更换现有密钥。不要将密钥内容或环境变量全集输出到日志。
-5. 发布使用 CNB 在构建中提供的 `CNB_TOKEN`，需要有创建 Release、上传附件及更新 Release 的权限；遇到 403 先检查构建权限，不将个人 token 写入源码。配置版本标签保护，只允许维护者创建 `v*`；保护 main，审查流水线及发布脚本的修改。专用节点只承接可信发布标签，不能同时用来执行外部 PR。
+1. 从公开 GitHub main 拉取源码，快进推送到 CNB main；有分叉时明确失败，不强推覆盖任何历史。
+2. 读取 GitHub 最新正式 Release；没有正式版或已同步时保留 CNB 当前版本。只支持 v主.次.补丁，忽略预发布，拒绝降级。
+3. 从指定 GitHub 仓库下载完整的 Mac、Windows、签名、源码、构建信息和 SHA256 清单，逐个验证大小及哈希；验证构建 SHA 对应发布标签及 main 历史。
+4. 根据发布提交读取版本、策略及说明，不使用可能已经升版的 main 配置。只创建草稿，附件全部完成后正式发布；失败可重跑，上一正式版继续服务。
+5. 安装包与更新签名保持 GitHub 原始字节；重新生成 CNB latest.json，将下载地址改为 CNB，并重新生成镜像校验清单。
+6. 同步使用 CNB 临时 CNB_TOKEN，需要代码推送及 repo-release:rw 权限。不上传个人 token 或更新私钥。若服务返回权限错误，需由仓库管理员检查构建凭证权限。
 
-官方节点说明：[CNB 构建节点](https://docs.cnb.cool/zh/build/build-node.html)。本任务只生成仓库配置，不自动注册宿主机或上传私钥。
+CNB 初次需同步配置到 main，并执行 `cnb build build-crontab-sync --repo nanzhaigame-xpy/MIDALocalizationTool --branch main` 注册计划。后续流水线同步自身源码，不回写 GitHub。旧 CNB Releases 保留，不覆盖、不删除。
 
-## 发布新版本
+## 验证范围
 
-1. 同步修改 `package.json`、`package-lock.json`、`src-tauri/tauri.conf.json`、`src-tauri/Cargo.toml`、`src-tauri/Cargo.lock` 的应用版本。
-2. 为新版本填写 `release-policy.json` 的 `optional` 或 `mandatory`；添加 `docs/release-<版本>.md`，仅写给用户看的更新简述。
-3. 审查、提交并推送 main，等待 CI 通过；在经过验收的提交上创建对应 `v<版本>` 标签并推送。发布脚本还会检查标签版本、仓库身份、干净检出以及标签提交是否包含在远端 main 中。
-4. Mac、Windows 任一构建失败，均不发布。每次使用全新的 Cargo 构建目录，不复用旧安装包。完整构建后创建/复用草稿，上传双平台安装包、更新签名、源码及校验清单，最后才将 Release 设为正式版。
-5. 已发布版本拒绝覆盖；失败留下的草稿可在排障后重跑同一标签流水线。发布由仓库级锁串行执行，不取消正在上传的任务。
+CI 包含 JS/Python 语法、版本一致性、更新策略、前端生成与 Rust 编译。按项目规则不创建/运行测试、不触碰真实工作区。云构建成功不等于 Windows 实机安装、视频播放和 UI 全流程已验收。
 
-当前 `1.0.0` 已发布，不能用它再次验证正式发布；应先升版。配置落地不等于远端已启用：必须先完成提交推送、节点接入和密钥配置。
-
-## 本地检查
-
-```sh
-npm ci
-npm run ci:check
-cargo check --locked --manifest-path src-tauri/Cargo.toml
-```
-
-`.ci/Dockerfile` 为无签名凭据的 Linux 检查环境；使用 Debian Bookworm、Node 22 和 Rust stable 系列镜像。依赖锁文件保持锁定，基础镜像随该系列更新。
-
-macOS 目前仍为 ad-hoc 签名，Windows 无 Authenticode 签名；自动流水线不等于 Apple 公证或 Windows 签名服务。
+本地仅执行 `npm run ci:check`、`cargo check --locked --manifest-path src-tauri/Cargo.toml`、actionlint 和 CNB 配置校验；发布安装包必须来自 GitHub Actions，不使用本地 releases 目录中的旧产物。

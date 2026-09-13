@@ -4,7 +4,7 @@
   "private": true,
   "scripts": {
     "ci:check": "node scripts/ci-check.cjs",
-    "ci:release": "node scripts/ci-release.cjs",
+    "ci:release": "node scripts/publish-github.cjs",
     "prepare:desktop": "node scripts/prepare-desktop.cjs",
     "desktop": "tauri dev",
     "release:mac": "tauri build --target universal-apple-darwin --bundles app,dmg",

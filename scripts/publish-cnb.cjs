@@ -4,8 +4,9 @@ const crypto = require('node:crypto');
 const { execFileSync } = require('node:child_process');
 
 const root = path.resolve(__dirname, '..');
-const version = require('../package.json').version;
-const updatePolicy = require('../release-policy.json')[version];
+const sourceRoot = process.env.RELEASE_SOURCE_DIR || root;
+const version = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'package.json'), 'utf8')).version;
+const updatePolicy = JSON.parse(fs.readFileSync(path.join(sourceRoot, 'release-policy.json'), 'utf8'))[version];
 if (!['mandatory', 'optional'].includes(updatePolicy)) throw new Error('请在 release-policy.json 为当前版本明确设置 mandatory 或 optional');
 const repository = 'nanzhaigame-xpy/MIDALocalizationTool';
 const api = `https://api.cnb.cool/${repository}/-/releases`;
@@ -49,7 +50,7 @@ async function main() {
   for (const name of required) if (!fs.statSync(path.join(directory, name)).size) throw new Error(`缺少完整产物：${name}`);
   const buildInfo = JSON.parse(fs.readFileSync(path.join(directory, 'build-info.json'), 'utf8'));
   if (buildInfo.version !== version) throw new Error('构建版本不匹配');
-  if (buildInfo.sourceHashes['release-policy.json'] !== checksum(fs.readFileSync(path.join(root, 'release-policy.json')))) throw new Error('更新策略与源码快照不一致，请重新整理发布产物');
+  if (buildInfo.sourceHashes['release-policy.json'] !== checksum(fs.readFileSync(path.join(sourceRoot, 'release-policy.json')))) throw new Error('更新策略与源码快照不一致，请重新整理发布产物');
   for (const name of required.filter(name => name !== 'build-info.json')) {
     if (buildInfo.artifacts[name] !== checksum(fs.readFileSync(path.join(directory, name)))) throw new Error(`产物哈希不匹配：${name}`);
   }
@@ -76,14 +77,14 @@ async function main() {
     const url = new URL(assets[name].brower_download_url);
     if (url.protocol !== 'https:' || url.hostname !== 'cnb.cool' || !url.pathname.startsWith(`/${repository}/-/releases/`)) throw new Error('更新下载地址不属于当前仓库');
   }
-  const manifest = { version, mandatory: updatePolicy === 'mandatory', notes: fs.readFileSync(path.join(root, `docs/release-${version}.md`), 'utf8'), pub_date: new Date().toISOString(), platforms: { 'darwin-aarch64': platform(macUpdate), 'darwin-x86_64': platform(macUpdate), 'windows-x86_64': platform(windowsUpdate) } };
+  const manifest = { version, mandatory: updatePolicy === 'mandatory', notes: fs.readFileSync(path.join(sourceRoot, `docs/release-${version}.md`), 'utf8'), pub_date: new Date().toISOString(), platforms: { 'darwin-aarch64': platform(macUpdate), 'darwin-x86_64': platform(macUpdate), 'windows-x86_64': platform(windowsUpdate) } };
   fs.writeFileSync(path.join(directory, 'latest.json'), JSON.stringify(manifest, null, 2) + '\n');
   await upload('latest.json');
   const names = [...required, 'latest.json'];
   fs.writeFileSync(path.join(directory, 'SHA256SUMS'), names.map(name => `${checksum(fs.readFileSync(path.join(directory, name)))}  ${name}\n`).join(''));
   await upload('SHA256SUMS');
   if (publish) {
-    await request(`${api}/${release.id}`, 'PATCH', { draft: false, prerelease: false, make_latest: 'true', body: fs.readFileSync(path.join(root, `docs/release-${version}.md`), 'utf8') });
+    await request(`${api}/${release.id}`, 'PATCH', { draft: false, prerelease: false, make_latest: 'true', body: fs.readFileSync(path.join(sourceRoot, `docs/release-${version}.md`), 'utf8') });
     const result = await request(`${api}/${release.id}`);
     if (result.draft || !result.is_latest) throw new Error('发布状态未确认');
     console.log(`已正式发布：https://cnb.cool/${repository}/-/releases/tag/v${version}`);

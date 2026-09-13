@@ -52,7 +52,7 @@ Windows 安装程序未进行 Authenticode 签名，尚未在真实 Windows 环�
 
 ### 应用更新与发布
 
-CNB 自动检查及标签发布配置见 [CI/CD 接入说明](docs/ci-cd.md)：分支 push / PR 自动检查，正式版本标签在专用 Mac Runner 上重新构建双平台产物并发布。首次使用须先完成文档中的节点、签名与仓库配置。
+主仓库为 [GitHub](https://github.com/UnityX103/MIDALocalizationTool)，推送 main 后使用 GitHub 托管 Mac/Windows 节点重新构建，双端成功后发布新版本。CNB 仅作为默认国内更新镜像，每 30 分钟拉取 GitHub 源码及最新正式版本；不在本机或 CNB 构建安装包。配置见 [CI/CD 接入说明](docs/ci-cd.md)。
 
 - 正式版启动后自动读取当前公开 CNB 仓库的 Release 列表，忽略草稿与预发布版本；发现新版后弹窗提示，不自动下载或安装。若正在导入、查看历史或使用其他弹窗，会在操作完成并返回编辑器后提示。无网络时显示检查失败，不妨碍离线编辑。
 - 每版在 `release-policy.json` 明确配置 `mandatory`（强制）或 `optional`（可选），发布脚本写入 `latest.json` 的布尔字段 `mandatory`，并检查配置与源码快照一致。没有该字段的旧清单按可选更新处理；字段类型错误则报告更新检查失败。

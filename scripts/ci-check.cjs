@@ -21,7 +21,7 @@ for (const match of fs.readFileSync('prototype.html', 'utf8').matchAll(/<script\
   if (match[1].trim()) new vm.Script(match[1], { filename: 'prototype.html' });
 }
 for (const file of ['workspace-store.js', 'preview-player.js', ...fs.readdirSync('scripts').filter(file => file.endsWith('.cjs')).map(file => `scripts/${file}`)]) run(process.execPath, ['--check', file]);
-run('python3', ['-c', 'import ast,pathlib; [ast.parse(path.read_text(encoding="utf-8"), filename=str(path)) for path in pathlib.Path(".").glob("*.py")]']);
+run(process.platform === 'win32' ? 'python' : 'python3', ['-c', 'import ast,pathlib; [ast.parse(path.read_text(encoding="utf-8"), filename=str(path)) for path in pathlib.Path(".").glob("*.py")]']);
 run(process.execPath, ['scripts/prepare-desktop.cjs']);
 for (const [source, output] of [['prototype.html', 'index.html'], ['workspace-store.js', 'workspace-store.js'], ['preview-player.js', 'preview-player.js'], ['app-icon.svg', 'app-icon.svg']]) {
   if (!fs.readFileSync(source).equals(fs.readFileSync(`dist/${output}`))) throw new Error(`前端产物不匹配：${output}`);

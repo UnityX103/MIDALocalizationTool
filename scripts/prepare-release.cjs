@@ -35,7 +35,7 @@ const info = {
   preparedAt: new Date().toISOString(),
   gitHead: execFileSync('git', ['rev-parse', 'HEAD'], { cwd: root, encoding: 'utf8' }).trim(),
   sourceOfTruth: sourceName,
-  uncommittedSourceIncluded: true,
+  uncommittedSourceIncluded: Boolean(execFileSync('git', ['status', '--porcelain'], { cwd: root, encoding: 'utf8' }).trim()),
   sourceHashes: Object.fromEntries(sources.map(file => [file, hash(path.join(root, file))])),
   artifacts,
 };
