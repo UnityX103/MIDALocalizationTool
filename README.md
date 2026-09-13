@@ -34,19 +34,17 @@ Windows 可用 `py -3 serve.py`。默认只监听 `127.0.0.1:8034`，使用 Pyth
 
 浏览器 IndexedDB 使用独立名称 `mida-localization-editor-workspace`，不读取旧编辑器的数据库。它与原生 App 工作区相互独立；不同来源地址的浏览器工作区也不会自动共享。需要迁移内容时使用 ZIP，不拷贝浏览器缓存。
 
-## macOS 构建
+## 安装包构建（CD）
 
-需要 Xcode 构建工具和 `aarch64-apple-darwin`、`x86_64-apple-darwin` 两个 Rust target：
+安装包统一交给 GitHub Actions CD 自动化构建，不在本地打包 App、DMG、EXE 或更新包。本地只做前端生成、语法与编译检查；提交推送后由云端流水线生成安装包，具体流程见 [CI/CD 接入说明](docs/ci-cd.md)。
 
-```sh
-npm run release:mac
-```
+### macOS
 
-生成通用 Apple Silicon / Intel App 与 DMG，最低 macOS 13。产物位于 `src-tauri/target/universal-apple-darwin/release/bundle/`。当前配置使用 ad-hoc 本地签名，不包含 Apple Developer ID 或 Apple 公证，不能将它当作已通过公开发行审核的安装包。
+CD 使用 macOS 节点生成通用 Apple Silicon / Intel App 与 DMG，最低 macOS 13。当前配置使用 ad-hoc 签名，不包含 Apple Developer ID 或 Apple 公证。
 
-### Windows 构建
+### Windows
 
-macOS 交叉构建需要 `cargo-xwin`、`x86_64-pc-windows-msvc` Rust target、LLVM 与 NSIS。将 LLVM 的 `bin` 加入 PATH 后运行 `npm run release:windows`，生成当前用户安装的 x64 NSIS 安装程序。Windows 原生构建使用 `npx tauri build`，自动采用 `tauri.windows.conf.json`。
+CD 使用 Windows 节点原生构建当前用户安装的 x64 NSIS 安装程序，采用 `tauri.windows.conf.json`。
 
 Windows 安装程序未进行 Authenticode 签名，尚未在真实 Windows 环境验证安装与启动。缺少 WebView2 时安装程序需要联网下载。
 

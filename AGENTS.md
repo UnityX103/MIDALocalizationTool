@@ -12,7 +12,8 @@
 
 - 单片段一份 JSON；导入支持数据清单 v2 和媒体清单 v3，导出仅为 v2 数据包，不回传视频。
 - 保留来源身份、哈希、版本合并、原子保存及媒体清理约束；同步 Rust 与浏览器端对同一协议的处理。
-- 仅按当前请求修改，不自动新建或运行测试。允许执行构建、语法和编译检查；不要对真实工作区做破坏性验证。
+- 仅按当前请求修改，不自动新建或运行测试。允许执行前端生成、语法和编译检查；不要对真实工作区做破坏性验证。
+- 安装包统一由 CD（GitHub Actions）自动化构建，不在本地执行 App、DMG、EXE 或更新包打包；本地检查通过后按用户授权提交、推送，由 CD 生成产物。
 - 优先沿用既有脚本，不能通过复制旧 dist 或 target 中的包代替重新构建。
 - 只提交当前任务改动，不带入其他任务修改；发布安装包、远端推送或变更仓库访问权限按用户请求执行。
 
@@ -21,7 +22,7 @@
 - 安装依赖：`npm ci`
 - 桌面开发：`npm run desktop`
 - 生成前端：`npm run prepare:desktop`
-- macOS 通用 App / DMG：`npm run release:mac`
+- 安装包构建：由 GitHub Actions CD 执行，见 `docs/ci-cd.md`；不在本地运行 `npm run release:mac`、`npm run release:windows` 或 `tauri build`。
 - Rust 编译检查：`cargo check --locked --manifest-path src-tauri/Cargo.toml`
 - 浏览器预览：`python3 serve.py`；默认端口 8034，已占用时使用 `--port 8035`，不要终止其他服务。
 

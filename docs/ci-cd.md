@@ -32,4 +32,4 @@ CNB 初次需同步配置到 main，并执行 `cnb build build-crontab-sync --re
 
 CI 包含 JS/Python 语法、版本一致性、更新策略、前端生成与 Rust 编译。按项目规则不创建/运行测试、不触碰真实工作区。云构建成功不等于 Windows 实机安装、视频播放和 UI 全流程已验收。
 
-本地仅执行 `npm run ci:check`、`cargo check --locked --manifest-path src-tauri/Cargo.toml`、actionlint 和 CNB 配置校验；发布安装包必须来自 GitHub Actions，不使用本地 releases 目录中的旧产物。
+本地仅执行 `npm run ci:check`、`cargo check --locked --manifest-path src-tauri/Cargo.toml`、actionlint 和 CNB 配置校验。安装包统一采用 CD 自动化构建，不在本地运行 `npm run release:mac`、`npm run release:windows` 或 `tauri build`；发布安装包必须来自 GitHub Actions，不使用本地 releases 目录中的旧产物。
