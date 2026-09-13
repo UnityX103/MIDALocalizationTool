@@ -2203,7 +2203,7 @@ dependencies = [
 
 [[package]]
 name = "mida-localization"
-version = "1.0.2"
+version = "1.0.3"
 dependencies = [
  "http-range",
  "reqwest",

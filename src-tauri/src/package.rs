@@ -208,7 +208,7 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport) -> Resu
 }
 
 pub fn build_package(document: &Value, output: &mut File) -> Result<(), String> {
-    validate_data(document, true)?;
+    validate_data(document, false)?;
     validate_tasks(document, None, &mut TaskCounts::default())?;
     let tasks = nonempty_array(document, "tasks", MAX_TASKS)?;
     let mut groups: Vec<(&str, Vec<&Value>)> = Vec::new();
@@ -288,7 +288,7 @@ pub fn build_package(document: &Value, output: &mut File) -> Result<(), String> 
 }
 
 pub fn selected_parts(document: &Value) -> Result<Vec<String>, String> {
-    validate_data(document, true)?;
+    validate_data(document, false)?;
     validate_tasks(document, None, &mut TaskCounts::default())?;
     let mut parts = Vec::new();
     for task in nonempty_array(document, "tasks", MAX_TASKS)? {

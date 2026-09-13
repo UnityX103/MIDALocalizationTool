@@ -94,12 +94,13 @@ async fn import_dropped_package(app: tauri::AppHandle, space_id: Option<String>)
 }
 
 #[tauri::command]
-async fn export_package(app: tauri::AppHandle, document: Value) -> Result<Option<Value>, String> {
+async fn export_package(app: tauri::AppHandle, document: Value, allow_unresolved: Option<bool>) -> Result<Option<Value>, String> {
+    if document["deliveryState"] == "draft" && allow_unresolved != Some(true) { return Err("请先确认是否忽略待处理问题并导出".into()); }
     package::selected_parts(&document)?;
     let package_id = document["packageId"].as_str().ok_or("缺少包标识")?;
     let safe_id: String = package_id.chars().filter(|character| character.is_ascii_alphanumeric() || *character == '-').take(64).collect();
-    let selected = app.dialog().file().set_title("导出本地化完成稿")
-        .set_file_name(format!("localization.ready.{safe_id}.zip"))
+    let selected = app.dialog().file().set_title("导出本地化数据")
+        .set_file_name(format!("localization.{}.{safe_id}.zip", document["deliveryState"].as_str().ok_or("交付状态无效")?))
         .add_filter("本地化 ZIP", &["zip"]).blocking_save_file();
     let Some(selected) = selected else { return Ok(None) };
     let path = selected.into_path().map_err(|error| error.to_string())?;
@@ -170,6 +171,16 @@ async fn workspace_save(app: tauri::AppHandle, mut snapshot: Value, expected_rev
         if let Ok(mut grants) = state.media_urls.lock() { grants.retain(|_, (_, path)| path.is_file()); }
         Ok(result)
     }
+}
+
+#[tauri::command]
+async fn workspace_save_task(app: tauri::AppHandle, task: Value, task_index: usize, project_id: String, view: Value, confirmed_keys: Vec<String>, expected_revision: u64, space_id: Option<String>, expected_cache_epoch: u64) -> Result<Value, String> {
+    let state = app.state::<NativeState>();
+    let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
+    if expected_cache_epoch != state.cache_epoch.load(Ordering::SeqCst) { return Err("缓存已被清空，旧页面不会重新保存数据".into()); }
+    if space_id.as_deref().filter(|value| !value.is_empty()).is_some_and(|value| task["language"].as_str() != Some(value)) { return Err("片段目标语言不匹配".into()); }
+    let root = space_root(&app, space_id.as_deref())?;
+    workspace::save_task(&root, task, task_index, &project_id, view, confirmed_keys, expected_revision)
 }
 
 #[tauri::command]
@@ -278,7 +289,7 @@ fn main() {
                 None => tauri::http::Response::builder().status(404).body(Vec::new()).unwrap_or_default(),
             }
         })
-        .invoke_handler(tauri::generate_handler![choose_package, import_dropped_package, export_package, confirm_action, finish_exit, workspace_read, workspace_save, workspace_spaces, workspace_cache_epoch, clear_all_cache, relocate_media_import, discard_media_import, get_preview_media, updater::repository_history, updater::check_app_update, updater::install_app_update])
+        .invoke_handler(tauri::generate_handler![choose_package, import_dropped_package, export_package, confirm_action, finish_exit, workspace_read, workspace_save, workspace_save_task, workspace_spaces, workspace_cache_epoch, clear_all_cache, relocate_media_import, discard_media_import, get_preview_media, updater::repository_history, updater::check_app_update, updater::install_app_update])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                 if let Ok(mut dropped) = window.state::<NativeState>().dropped_paths.lock() {

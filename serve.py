@@ -20,10 +20,10 @@ ROOT = Path(__file__).resolve().parent
 MAX_RANGE_BYTES = 8 * 1024 * 1024
 
 
-def validate_delivery(document):
+def validate_delivery(document, allow_unresolved=False):
     if not isinstance(document, dict) or document.get('format') != 'mida-localization' or type(document.get('formatVersion')) is not int or document['formatVersion'] != 1:
         raise ValueError('无效的本地化交付格式')
-    if document.get('demo') or document.get('deliveryState') != 'ready':
+    if document.get('demo') or document.get('deliveryState') not in (('ready', 'draft') if allow_unresolved else ('ready',)):
         raise ValueError('只接受真实任务的已完成交付文件')
     if not isinstance(document.get('projectId'), str) or not document['projectId']:
         raise ValueError('缺少项目标识')
@@ -62,7 +62,9 @@ def validate_delivery(document):
             keys.add(key)
             review = entry.get('review')
             translation = entry.get('translation')
-            if not isinstance(review, dict) or review.get('state') != 'confirmed' or not isinstance(translation, str) or not translation.strip():
+            if not isinstance(review, dict) or review.get('state') not in ('pending', 'confirmed') or not isinstance(translation, str):
+                raise ValueError('词条复核状态或译文格式无效')
+            if document['deliveryState'] == 'ready' and (review['state'] != 'confirmed' or not translation.strip()):
                 raise ValueError('仍有未完成或空译文')
 
 
@@ -315,16 +317,20 @@ class EditorHandler(BaseHTTPRequestHandler):
                           if self.path == '/api/media/commit' else self.media_store.discard(request['token']))
                 self.reply(200, result)
                 return
+            allow_unresolved = False
             if isinstance(request, dict) and 'document' in request:
-                if set(request) - {'document'}:
+                if set(request) - {'document', 'allowUnresolved'}:
                     raise ValueError('编辑器仅支持导出数据，不接受预览视频或其他导出选项')
+                if 'allowUnresolved' in request and type(request['allowUnresolved']) is not bool:
+                    raise ValueError('忽略待处理问题的确认参数无效')
+                allow_unresolved = request.get('allowUnresolved', False)
                 document = request['document']
             else:
                 document = request
-            validate_delivery(document)
+            validate_delivery(document, allow_unresolved)
             directory = self.server.output_directory
             directory.mkdir(parents=True, exist_ok=True)
-            destination = directory / f'localization.ready.{uuid4().hex}.zip'
+            destination = directory / f"localization.{document['deliveryState']}.{uuid4().hex}.zip"
             temporary = destination.with_suffix('.tmp')
             try:
                 with temporary.open('xb') as output:
