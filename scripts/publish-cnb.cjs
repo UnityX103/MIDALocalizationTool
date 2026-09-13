@@ -42,7 +42,9 @@ async function main() {
     });
     if (!response.ok) throw new Error(`CNB ${method} 失败：HTTP ${response.status}`);
     const text = await response.text();
-    return text ? JSON.parse(text) : null;
+    const result = text ? JSON.parse(text) : null;
+    if (result?.errcode) throw new Error(`CNB ${method} API 错误：${result.errcode}`);
+    return result;
   }
   const macUpdate = `MIDA-Localization-${version}-macOS-universal.app.tar.gz`;
   const windowsUpdate = `MIDA-Localization-${version}-Windows-x64-setup.exe`;
@@ -62,13 +64,19 @@ async function main() {
     if (new URL(ticket.upload_url).protocol !== 'https:') throw new Error('上传地址必须为 HTTPS');
     const response = await fetch(ticket.upload_url, { method: 'PUT', body: bytes, redirect: 'error', signal: AbortSignal.timeout(600000) });
     if (!response.ok) throw new Error(`上传失败：${name} HTTP ${response.status}`);
-    await request(ticket.verify_url, 'POST');
-    const updated = await request(`${api}/${release.id}`);
-    const asset = updated.assets.find(asset => asset.name === name);
-    if (!asset || asset.size !== bytes.length) throw new Error(`远端附件大小不一致：${name}`);
-    if (asset.hash_algo === 'sha256' && asset.hash_value !== checksum(bytes)) throw new Error(`远端附件哈希不一致：${name}`);
-    console.log(`已上传 ${name} (${bytes.length} bytes)`);
-    return asset;
+    const confirmation = await request(ticket.verify_url, 'POST');
+    console.log(`上传确认 ${name}：响应字段 ${Object.keys(confirmation || {}).join(',') || '空响应'}`);
+    let asset;
+    for (const delay of [0, 2000, 4000, 8000, 16000, 30000]) {
+      if (delay) await new Promise(resolve => setTimeout(resolve, delay));
+      const updated = await request(`${api}/${release.id}`);
+      asset = updated.assets?.find(asset => asset.name === name);
+      if (!asset || Number(asset.size) !== bytes.length) continue;
+      if (asset.hash_algo === 'sha256' && asset.hash_value !== checksum(bytes)) throw new Error(`远端附件哈希不一致：${name}`);
+      console.log(`已上传 ${name} (${bytes.length} bytes)`);
+      return asset;
+    }
+    throw new Error(`远端附件未就绪：${name}，预期 ${bytes.length} 字节，实际 ${asset ? asset.size : '附件不存在'}；已等待 60 秒，草稿未发布`);
   }
   const assets = {};
   for (const name of required) assets[name] = await upload(name);
