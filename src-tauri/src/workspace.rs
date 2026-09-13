@@ -216,6 +216,9 @@ fn validate_snapshot(snapshot: &Value) -> Result<(), String> {
         if entries.iter().any(|entry| !entry.is_object()) {
             return Err("自动保存词条必须为 JSON 对象".into());
         }
+        for entry in entries {
+            crate::package::validate_source_snapshots(entry)?;
+        }
     }
     Ok(())
 }

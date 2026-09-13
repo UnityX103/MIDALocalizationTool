@@ -309,6 +309,35 @@ class MediaStore:
             pending = self.cleanup_stage(token) or pending
             return {'ok': True, 'token': token, 'projectId': project_id, 'status': 'committed', 'cleanupPending': pending}
 
+    def relocate(self, token, destination):
+        if destination.root == self.root:
+            return {'ok': True}
+        with self.locked() as source_database, destination.locked() as target_database:
+            row = self.get_import(source_database, token)
+            if row['state'] != 'staged':
+                raise MediaError('只能转移尚未提交的导入事务', 409)
+            source = self.stage_directory(token)
+            target = destination.stage_directory(token)
+            if target.exists() or target_database.execute('SELECT token FROM imports WHERE token=?', (token,)).fetchone():
+                raise MediaError('目标空间已有同名导入事务', 409)
+            baseline = destination.revisions(target_database, row['project_id'], json.loads(row['parts']))
+            source.rename(target)
+            try:
+                target_database.execute('INSERT INTO imports VALUES (?, ?, ?, ?, ?, ?, ?)',
+                    (token, row['project_id'], 'staged', row['parts'], row['records'], json.dumps(baseline), row['created']))
+                target_database.commit()
+                source_database.execute("UPDATE imports SET state='discarded' WHERE token=?", (token,))
+                source_database.commit()
+            except BaseException:
+                target_database.rollback()
+                target_database.execute('DELETE FROM imports WHERE token=?', (token,))
+                target_database.commit()
+                target.rename(source)
+                raise
+            sync_directory(self.staging)
+            sync_directory(destination.staging)
+            return {'ok': True}
+
     def discard(self, token):
         with self.locked() as database:
             row = self.get_import(database, token)

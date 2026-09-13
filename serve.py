@@ -3,11 +3,14 @@ import json
 import os
 import re
 import sqlite3
+import shutil
+import threading
 import zipfile
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
 from urllib.parse import parse_qs, urlsplit
+from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from media_store import MediaError, MediaStore
@@ -67,11 +70,34 @@ class EditorServer(ThreadingHTTPServer):
     def __init__(self, port, output_directory):
         self.output_directory = output_directory.resolve()
         self.media_store = MediaStore(self.output_directory)
+        self.space_stores = {}
+        self.space_lock = threading.Lock()
+        self.operation_lock = threading.RLock()
         super().__init__(('127.0.0.1', port), EditorHandler)
         self.origin = f'http://127.0.0.1:{self.server_port}'
 
 
 class EditorHandler(BaseHTTPRequestHandler):
+    @property
+    def media_store(self):
+        query = parse_qs(urlsplit(self.path).query, keep_blank_values=True, max_num_fields=5)
+        space = self.headers.get('X-Localization-Space', '') or query.get('space', [''])[0]
+        return self.store_for_space(space)
+
+    def store_for_space(self, space):
+        if not space:
+            return self.server.media_store
+        if not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', space):
+            raise MediaError('语言空间标识无效')
+        with self.server.space_lock:
+            if space not in self.server.space_stores:
+                parent = self.server.output_directory / '.spaces'
+                directory = parent / space
+                if parent.is_symlink() or directory.is_symlink():
+                    raise MediaError('语言空间不能是符号链接')
+                self.server.space_stores[space] = MediaStore(directory)
+            return self.server.space_stores[space]
+
     def reply(self, status, data, content_type='application/json; charset=utf-8', headers=None):
         payload = data if isinstance(data, bytes) else json.dumps(data, ensure_ascii=False).encode('utf-8')
         self.send_response(status)
@@ -108,6 +134,36 @@ class EditorHandler(BaseHTTPRequestHandler):
         self.do_GET()
 
     def do_GET(self):
+        if urlsplit(self.path).path == '/api/repository-history':
+            if not self.valid_host() or not self.valid_media_origin():
+                self.reply(403, {'error': '仅允许本机编辑器读取版本历史'})
+                return
+            try:
+                repository = 'https://cnb.cool/nanzhaigame-xpy/MIDALocalizationTool'
+                request = Request(repository + '/-/releases?page=1&page_size=100', headers={
+                    'Accept': 'application/vnd.cnb.api+json', 'User-Agent': 'MIDA-Localization-About'})
+                with urlopen(request, timeout=20) as response:
+                    content = response.read(4 * 1024 * 1024 + 1)
+                if len(content) > 4 * 1024 * 1024:
+                    raise ValueError('版本历史响应超过大小上限')
+                releases = json.loads(content)
+                if not isinstance(releases, list):
+                    raise ValueError('版本历史格式无效')
+                releases = [release for release in releases if isinstance(release, dict)
+                    and release.get('draft') is not True and release.get('prerelease') is not True
+                    and isinstance(release.get('tag_name'), str)]
+                releases.sort(key=lambda release: str(release.get('published_at') or release.get('created_at') or ''), reverse=True)
+                self.reply(200, {'repository': repository, 'releases': [
+                    {'tag': release['tag_name'], 'name': release.get('name'),
+                     'publishedAt': release.get('published_at'), 'notes': release.get('body')}
+                    for release in releases[:5]]})
+            except (OSError, ValueError) as error:
+                self.reply(502, {'error': '读取仓库版本历史失败：' + str(error)})
+            return
+        with self.server.operation_lock:
+            self.handle_get()
+
+    def handle_get(self):
         if not self.valid_host():
             self.reply(403, {'error': '仅允许本机编辑器访问'})
             return
@@ -119,10 +175,10 @@ class EditorHandler(BaseHTTPRequestHandler):
                 return
             try:
                 if path == '/api/media/info':
-                    query = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=4)
+                    query = parse_qs(parsed.query, keep_blank_values=True, max_num_fields=5)
                     if any(len(values) != 1 for values in query.values()):
                         raise MediaError('媒体查询参数不能重复')
-                    self.reply(200, self.server.media_store.info({key: values[0] for key, values in query.items()}))
+                    self.reply(200, self.media_store.info({key: values[0] for key, values in query.items() if key != 'space'}))
                 else:
                     self.send_video(path.removeprefix('/api/media/'))
             except MediaError as error:
@@ -134,6 +190,8 @@ class EditorHandler(BaseHTTPRequestHandler):
             return
         if path in ('/', '/prototype.html'):
             self.reply(200, (ROOT / 'prototype.html').read_bytes(), 'text/html; charset=utf-8')
+        elif path == '/app-icon.svg':
+            self.reply(200, (ROOT / 'app-icon.svg').read_bytes(), 'image/svg+xml')
         elif path in ('/workspace-store.js', '/preview-player.js'):
             try:
                 self.reply(200, (ROOT / path[1:]).read_bytes(), 'text/javascript; charset=utf-8')
@@ -145,7 +203,7 @@ class EditorHandler(BaseHTTPRequestHandler):
             self.reply(404, {'error': '页面不存在'})
 
     def send_video(self, media_id):
-        with self.server.media_store.open_video(media_id) as (source, record):
+        with self.media_store.open_video(media_id) as (source, record):
             size = record['byteLength']
             start, end, status = 0, size - 1, 200
             etag = '"' + record['sha256'] + '"'
@@ -194,11 +252,15 @@ class EditorHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
 
     def do_POST(self):
+        with self.server.operation_lock:
+            self.handle_post()
+
+    def handle_post(self):
         self.close_connection = True
         if not self.valid_host() or self.headers.get_all('Origin') != [self.server.origin]:
             self.reply(403, {'error': '不允许跨站操作'})
             return
-        if self.path not in ('/api/export', '/api/import', '/api/media/commit', '/api/media/discard', '/api/media/info'):
+        if self.path not in ('/api/export', '/api/import', '/api/media/commit', '/api/media/discard', '/api/media/info', '/api/media/relocate', '/api/cache/clear'):
             self.reply(404, {'error': '接口不存在'})
             return
         expected_type = 'application/zip' if self.path == '/api/import' else 'application/json'
@@ -216,22 +278,41 @@ class EditorHandler(BaseHTTPRequestHandler):
                 return
             self.connection.settimeout(30)
             if self.path == '/api/import':
-                result = self.server.media_store.import_stream(self.rfile, length)
+                result = self.media_store.import_stream(self.rfile, length)
                 self.reply(200, result)
                 return
             payload = self.rfile.read(length)
             if len(payload) != length:
                 raise ValueError('文件内容不完整')
             request = parse_json(payload.decode('utf-8'))
+            if self.path == '/api/cache/clear':
+                if not isinstance(request, dict) or set(request) != {'confirmed'} or request['confirmed'] is not True:
+                    raise ValueError('清空操作尚未确认')
+                directories = [self.server.output_directory / '.media-cache', self.server.output_directory / '.spaces']
+                if any(directory.is_symlink() for directory in directories):
+                    raise ValueError('缓存目录不能是符号链接')
+                with self.server.space_lock:
+                    for directory in directories:
+                        if directory.exists():
+                            shutil.rmtree(directory)
+                    self.server.space_stores.clear()
+                    self.server.media_store = MediaStore(self.server.output_directory)
+                self.reply(200, {'ok': True})
+                return
+            if self.path == '/api/media/relocate':
+                if not isinstance(request, dict) or set(request) != {'token', 'spaceId'} or not isinstance(request['spaceId'], str):
+                    raise ValueError('导入转移参数无效')
+                self.reply(200, self.media_store.relocate(request['token'], self.store_for_space(request['spaceId'])))
+                return
             if self.path == '/api/media/info':
-                self.reply(200, self.server.media_store.info(request))
+                self.reply(200, self.media_store.info(request))
                 return
             if self.path in ('/api/media/commit', '/api/media/discard'):
                 fields = {'token', 'projectId'} if self.path == '/api/media/commit' else {'token'}
                 if not isinstance(request, dict) or set(request) != fields:
                     raise ValueError('媒体确认或取消参数无效')
-                result = (self.server.media_store.commit(request['token'], request['projectId'])
-                          if self.path == '/api/media/commit' else self.server.media_store.discard(request['token']))
+                result = (self.media_store.commit(request['token'], request['projectId'])
+                          if self.path == '/api/media/commit' else self.media_store.discard(request['token']))
                 self.reply(200, result)
                 return
             if isinstance(request, dict) and 'document' in request:

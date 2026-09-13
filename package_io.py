@@ -71,6 +71,14 @@ def valid_hash(value):
     return isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
 
 
+def validate_source_snapshots(entry):
+    for field in ('currentSource', 'localizationSourceAtExport', 'translationAtExport'):
+        if not isinstance(entry.get(field), str):
+            raise ValueError('来源快照必须是文本：' + field)
+    if 'englishTranslationAtExport' in entry and not isinstance(entry['englishTranslationAtExport'], str):
+        raise ValueError('旧英文快照 englishTranslationAtExport 必须是文本')
+
+
 def valid_integer(value, minimum=0):
     return type(value) is int and minimum <= value <= MAX_INTEGER
 
@@ -323,6 +331,7 @@ def read_package(source, media_directory):
                     if not isinstance(entry, dict) or not valid_text(entry.get('key')) or entry['key'] in keys:
                         raise ValueError('词条标识无效或重复')
                     keys.add(entry['key'])
+                    validate_source_snapshots(entry)
                 entry_count += len(entries)
             if task_count > 1000 or entry_count > 100000:
                 raise ValueError('任务或词条总数超过上限')
@@ -348,6 +357,8 @@ def write_package(output, document):
     manifest.update(format='mida-localization-manifest', formatVersion=2, assets=[])
     groups = {}
     for task in document['tasks']:
+        for entry in task['entries']:
+            validate_source_snapshots(entry)
         groups.setdefault(task['partName'], []).append(task)
     if not 0 < len(groups) <= MAX_PARTS:
         raise ValueError('一次最多导出 100 个片段')

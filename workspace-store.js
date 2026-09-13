@@ -5,11 +5,35 @@ function localizationUuid(){
  return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20);
 }
 class LocalizationWorkspaceStore {
+ static readEnglishSnapshot(entry,language){
+  if(Object.hasOwn(entry,'englishTranslationAtExport')){
+   if(typeof entry.englishTranslationAtExport!=='string')throw new Error('旧英文快照 englishTranslationAtExport 必须是文本');
+   return entry.englishTranslationAtExport;
+  }
+  return language==='en'?entry.translationAtExport:'';
+ }
  static isLegacyDemo(snapshot){return Boolean(snapshot)&&(typeof snapshot.currentProjectId!=='string'||!snapshot.currentProjectId.trim()||snapshot.fileVersion?.lineageId==='demo-task-package'||snapshot.currentPackageId==='demo-import-v1');}
- constructor(){this.database=null;this.revision=0;this.pendingMediaImport=null;this.pendingMediaTerminal=false;}
+ constructor(){this.database=null;this.revision=0;this.pendingMediaImport=null;this.pendingMediaTerminal=false;this.spaceId='';this.cacheEpoch=0;}
+ static validSpace(value){return typeof value==='string'&&/^[a-z][a-z0-9_-]{0,31}$/.test(value);}
+ storageKey(key){return this.spaceId&&key!=='cache-generation'?'space:'+this.spaceId+':'+key:key;}
+ async clearAll(){
+  if(globalThis.__TAURI__){await globalThis.__TAURI__.core.invoke('clear_all_cache',{confirmed:true});return;}
+  const response=await fetch('/api/cache/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true})});
+  const result=await response.json();if(!response.ok)throw new Error(result.error||'视频缓存清理失败');
+  await this.open();
+  await new Promise((resolve,reject)=>{
+   const transaction=this.database.transaction(['workspace','backups'],'readwrite');const workspace=transaction.objectStore('workspace');const generation=workspace.get('cache-generation');
+   generation.onsuccess=()=>{workspace.clear();transaction.objectStore('backups').clear();workspace.put((generation.result||0)+1,'cache-generation');};
+   transaction.oncomplete=resolve;transaction.onabort=()=>reject(transaction.error||new Error('清空本地存档失败'));
+  });
+ }
+ async spaces(){
+  if(globalThis.__TAURI__)return globalThis.__TAURI__.core.invoke('workspace_spaces');
+  await this.open();return new Promise((resolve,reject)=>{const transaction=this.database.transaction('workspace','readonly');const request=transaction.objectStore('workspace').getAllKeys();transaction.oncomplete=()=>resolve(request.result.filter(key=>typeof key==='string'&&/^space:[a-z][a-z0-9_-]{0,31}:current$/.test(key)).map(key=>key.split(':')[1]));transaction.onabort=()=>reject(transaction.error);});
+ }
  async mediaRequest(action,payload){
-  const response=await fetch('/api/media/'+action,{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify(payload)});
-  const result=await response.json();if(!response.ok){const error=new Error(result.error||'预览视频处理失败');error.status=response.status;throw error;}return result;
+  const response=await fetch('/api/media/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Localization-Space':this.spaceId},body:JSON.stringify(payload)});
+  const result=await response.json();if(!response.ok){const error=new Error(result.error||'预览视频处理失败');error.status=response.status;throw error;}if(result.url&&this.spaceId)result.url+='?space='+encodeURIComponent(this.spaceId);return result;
  }
  async finishMediaImport(record){
   if(!this.pendingMediaImport)return record;
@@ -29,22 +53,24 @@ class LocalizationWorkspaceStore {
   this.database.onversionchange=()=>{this.database.close();this.database=null;};
  }
  async read(store,key){
-  if(globalThis.__TAURI__)return globalThis.__TAURI__.core.invoke('workspace_read',{store,key}).catch(error=>{throw new Error(String(error));});
+  if(globalThis.__TAURI__)return globalThis.__TAURI__.core.invoke('workspace_read',{store,key,spaceId:this.spaceId}).catch(error=>{throw new Error(String(error));});
   await this.open();
   return new Promise((resolve,reject)=>{
    const transaction=this.database.transaction(store,'readonly');
-   const request=transaction.objectStore(store).get(key);
+   const request=transaction.objectStore(store).get(this.storageKey(key));
    transaction.oncomplete=()=>resolve(request.result);
    transaction.onabort=()=>reject(transaction.error||new Error('读取本地保存失败'));
   });
  }
- async load(){const record=await this.read('workspace','current');this.revision=record?.revision||0;this.pendingMediaImport=null;this.pendingMediaTerminal=false;if(LocalizationWorkspaceStore.isLegacyDemo(record?.snapshot))return null;if(!globalThis.__TAURI__&&record){this.pendingMediaImport=record.snapshot.mediaImportPending||null;return this.finishMediaImport(record);}return record;}
+ async load(){this.cacheEpoch=globalThis.__TAURI__?await globalThis.__TAURI__.core.invoke('workspace_cache_epoch'):(await this.read('workspace','cache-generation'))||0;const record=await this.read('workspace','current');this.revision=record?.revision||0;this.pendingMediaImport=null;this.pendingMediaTerminal=false;if(LocalizationWorkspaceStore.isLegacyDemo(record?.snapshot))return null;if(!globalThis.__TAURI__&&record){this.pendingMediaImport=record.snapshot.mediaImportPending||null;return this.finishMediaImport(record);}return record;}
  async history(){const history=(await this.read('workspace','history'))||[];const visible=await Promise.all(history.map(async summary=>{const record=await this.read('backups',summary.id);return LocalizationWorkspaceStore.isLegacyDemo(record?.snapshot)?null:summary;}));return visible.filter(Boolean);}
  async backup(id){const record=await this.read('backups',id);return LocalizationWorkspaceStore.isLegacyDemo(record?.snapshot)?null:record;}
  async save(snapshot,backupReason=null,mediaImportToken=null){
   if(!Array.isArray(snapshot?.tasks)||!snapshot.tasks.length||snapshot.tasks.length>1000)throw new Error('自动保存任务数量必须为 1 至 1000');
+  for(const task of snapshot.tasks)for(const entry of task.entries)LocalizationWorkspaceStore.readEnglishSnapshot(entry,task.language);
   if(LocalizationWorkspaceStore.isLegacyDemo(snapshot))throw new Error('请先导入 Unity 导出的 ZIP，空白或旧示例工作区不会保存');
-  if(globalThis.__TAURI__){const result=await globalThis.__TAURI__.core.invoke('workspace_save',{snapshot,expectedRevision:this.revision,backupReason,mediaImportToken}).catch(error=>{throw new Error(String(error));});this.revision=result.revision;const warnings=[result.mediaCleanupWarning,result.mediaStagingWarning].filter(Boolean);if(warnings.length)result.mediaWarning='数据已保存，媒体清理尚未全部完成：'+warnings.join('；');return result;}
+  const languages=new Set(snapshot.tasks.map(task=>task.language));if(languages.size!==1||(this.spaceId&&![...languages].every(language=>language===this.spaceId)))throw new Error('当前空间只允许保存一种匹配的目标语言');
+  if(globalThis.__TAURI__){const result=await globalThis.__TAURI__.core.invoke('workspace_save',{snapshot,expectedRevision:this.revision,backupReason,mediaImportToken,spaceId:this.spaceId,expectedCacheEpoch:this.cacheEpoch}).catch(error=>{throw new Error(String(error));});this.revision=result.revision;const warnings=[result.mediaCleanupWarning,result.mediaStagingWarning].filter(Boolean);if(warnings.length)result.mediaWarning='数据已保存，媒体清理尚未全部完成：'+warnings.join('；');return result;}
   if(this.pendingMediaImport&&mediaImportToken&&this.pendingMediaImport.token!==mediaImportToken){const retry=await this.finishMediaImport({});if(retry.mediaWarning&&!this.pendingMediaTerminal)throw new Error(retry.mediaWarning);if(this.pendingMediaTerminal){await this.mediaRequest('discard',{token:this.pendingMediaImport.token}).catch(()=>{});this.pendingMediaImport=null;this.pendingMediaTerminal=false;}}
   const pendingImport=mediaImportToken?{token:mediaImportToken,projectId:snapshot.currentProjectId}:this.pendingMediaImport;
   snapshot=structuredClone(snapshot);if(pendingImport)snapshot.mediaImportPending=pendingImport;else delete snapshot.mediaImportPending;
@@ -56,31 +82,33 @@ class LocalizationWorkspaceStore {
    catch{transaction=this.database.transaction(['workspace','backups'],'readwrite');}
    const workspace=transaction.objectStore('workspace');
    const backups=transaction.objectStore('backups');
-   const currentRequest=workspace.get('current');
-   const historyRequest=workspace.get('history');
+   const currentRequest=workspace.get(this.storageKey('current'));
+   const historyRequest=workspace.get(this.storageKey('history'));
+   const generationRequest=workspace.get('cache-generation');
    let reads=0,result=null,failure=null;
    const update=()=>{
-    if(++reads!==2)return;
+    if(++reads!==3)return;
     try{
      const previous=currentRequest.result,history=historyRequest.result||[];
+     if((generationRequest.result||0)!==this.cacheEpoch)throw new Error('缓存已被清空，旧页面不会重新保存数据；请刷新页面');
      if((previous?.revision||0)!==expectedRevision)throw new Error('另一个编辑器页面已保存更新，已暂停本页保存以避免覆盖；请保留本页内容并关闭其他页面后重新打开');
      const replacingDemo=LocalizationWorkspaceStore.isLegacyDemo(previous?.snapshot);
-     if(replacingDemo)workspace.put(previous,'legacy-demo-current');
+     if(replacingDemo)workspace.put(previous,this.storageKey('legacy-demo-current'));
      const now=Date.now();let lastBackupAt=previous?.lastBackupAt||0;
      if(backupReason||!previous||replacingDemo||now-lastBackupAt>=5*60*1000){
       const savedSnapshot=backupReason||!previous||replacingDemo?snapshot:previous.snapshot;
       const savedAt=backupReason||!previous||replacingDemo?now:previous.savedAt;
       const id=localizationUuid();
-      backups.put({snapshot:savedSnapshot,savedAt},id);
+      backups.put({snapshot:savedSnapshot,savedAt},this.storageKey(id));
       history.unshift({id,savedAt,reason:backupReason||'定时备份',taskCount:savedSnapshot.tasks.length});
-      for(const removed of history.splice(10))backups.delete(removed.id);
-      workspace.put(history,'history');lastBackupAt=now;
+      for(const removed of history.splice(10))backups.delete(this.storageKey(removed.id));
+      workspace.put(history,this.storageKey('history'));lastBackupAt=now;
      }
      result={snapshot,savedAt:now,lastBackupAt,revision:expectedRevision+1};
-     workspace.put(result,'current');
+     workspace.put(result,this.storageKey('current'));
     }catch(error){failure=error;transaction.abort();}
    };
-   currentRequest.onsuccess=update;historyRequest.onsuccess=update;
+   currentRequest.onsuccess=update;historyRequest.onsuccess=update;generationRequest.onsuccess=update;
    transaction.oncomplete=()=>resolve(result);
    transaction.onabort=()=>reject(failure||transaction.error||new Error('本地保存事务未完成'));
   });

@@ -56,7 +56,7 @@ pub fn ensure_directory(path: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn remove_tree(path: &Path) -> Result<(), String> {
+pub fn remove_tree(path: &Path) -> Result<(), String> {
     safe_path(path)?;
     if !path.exists() {
         return Ok(());

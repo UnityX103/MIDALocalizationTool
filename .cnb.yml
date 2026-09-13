@@ -1,0 +1,27 @@
+$:
+  push: &checks
+    - name: 源码与桌面编译检查
+      docker:
+        build:
+          dockerfile: .ci/Dockerfile
+      stages:
+        - name: 安装锁定依赖
+          script: npm ci
+        - name: 语法、版本与前端生成检查
+          script: node scripts/ci-check.cjs
+        - name: Rust 编译检查
+          script: cargo check --locked --manifest-path src-tauri/Cargo.toml
+  pull_request: *checks
+  api_trigger: *checks
+  tag_push:
+    - name: 双平台构建与正式发布
+      runner:
+        namespace: group
+        tags: [mida-release-mac]
+      lock:
+        key: mida-localization-release
+        wait: true
+      stages:
+        - name: 检查、重新构建、签名与发布
+          script: node scripts/ci-release.cjs
+          timeout: 120m

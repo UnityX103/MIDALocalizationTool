@@ -389,6 +389,20 @@ struct TaskCounts {
     identities: HashSet<(String, String)>,
 }
 
+pub(crate) fn validate_source_snapshots(entry: &Value) -> Result<(), String> {
+    for field in ["currentSource", "localizationSourceAtExport", "translationAtExport"] {
+        if entry.get(field).and_then(Value::as_str).is_none() {
+            return Err(format!("来源快照必须是文本：{field}"));
+        }
+    }
+    if let Some(english) = entry.get("englishTranslationAtExport") {
+        if !english.is_string() {
+            return Err("旧英文快照 englishTranslationAtExport 必须是文本".into());
+        }
+    }
+    Ok(())
+}
+
 fn validate_tasks(
     document: &Value,
     expected_part: Option<&str>,
@@ -431,6 +445,7 @@ fn validate_tasks(
         }
         let mut keys = HashSet::new();
         for entry in entries {
+            validate_source_snapshots(entry)?;
             let key = nonempty_text(entry, "key")?;
             if !keys.insert(key) {
                 return Err(format!("词条标识重复：{key}"));
