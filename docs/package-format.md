@@ -32,6 +32,10 @@ ZIP 根目录为 `manifest.json`，每个片段分别位于 `parts/<partName>.js
 
 ## 预览媒体
 
+v3 任务 ZIP 允许部分片段含媒体、其他片段仅有文本。每个片段都必须包含自己的对话 JSON；仅对声明了媒体的片段要求视频与映射成对、录制身份一致且归属有效。浏览器与桌面导入遵循相同规则。
+
+Unity 的独立 `mida-localization-preview-bundle` 视频 ZIP 不属于翻译任务包，本编辑器不通过它创建任务或补充媒体；要导入预览，请使用包含对话 JSON 的 v3 任务 ZIP。
+
 时间映射使用 `mida-localization-preview` v1；事件含包名、occurrence、frame 和 timeMs。包名按 UTF-8 字节词典序排序并去重，对紧凑 JSON 数组计算 SHA-256。完整有效包清单与实际录到的包清单分别保存，不把未覆盖分支当作版本落后。
 
 播放器位于窗口底部；只有片段视频可用且包含目标对话包节点时显示「查看视频」。编辑器不录制或导出视频。

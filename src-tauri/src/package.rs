@@ -183,11 +183,6 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport) -> Resu
         let pair = media_assets.entry(part).or_default();
         if video { pair.0 = Some(asset); } else { pair.1 = Some(asset); }
     }
-    if version == 3 && stage.parts.iter().any(|part| {
-        !media_assets.get(part.as_str()).is_some_and(|(video, map)| video.is_some() && map.is_some())
-    }) {
-        return Err("v3 清单的每个对话片段都必须包含配对的视频和地图".into());
-    }
     for (part, (video_asset, map_asset)) in media_assets {
         let video_asset = video_asset.ok_or("媒体地图缺少配对视频")?;
         let map_asset = map_asset.ok_or("媒体视频缺少配对地图")?;
