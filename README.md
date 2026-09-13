@@ -1,6 +1,6 @@
 # MIDA 本地化编辑器
 
-独立的 macOS / Windows 桌面本地化编辑项目，使用 Tauri 2、HTML/JavaScript 和 Rust。当前源码版本 **0.3.0**；应用通过 ZIP 与 Unity 交换数据，不依赖 Unity 工程目录、Excel 或运行中的 Unity Editor。
+独立的 macOS / Windows 桌面本地化编辑项目，使用 Tauri 2、HTML/JavaScript 和 Rust。当前源码版本 **1.0.1**；应用通过 ZIP 与 Unity 交换数据，不依赖 Unity 工程目录、Excel 或运行中的 Unity Editor。
 
 远端仓库：`https://cnb.cool/nanzhaigame-xpy/MIDALocalizationTool`。
 
