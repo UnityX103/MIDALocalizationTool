@@ -12,7 +12,7 @@ MAX_EXPORT_BYTES = 128 * 1024 * 1024
 MAX_ENTRY_BYTES = 64 * 1024 * 1024
 MAX_ZIP_BYTES = 2 * 1024 * 1024 * 1024
 MAX_VIDEO_BYTES = 512 * 1024 * 1024
-MAX_PARTS = 100
+MAX_PARTS = 200
 CHUNK_BYTES = 1024 * 1024
 MAX_INTEGER = 9007199254740991
 MEDIA_TYPES = {'localization-preview-video': ('video', 'video.mp4'),
@@ -160,7 +160,7 @@ def validate_manifest(manifest):
         raise ValueError('清单项目或包版本身份无效')
     assets = manifest.get('assets')
     if not isinstance(assets, list) or not 0 < len(assets) <= MAX_PARTS * 3:
-        raise ValueError('清单资产为空或超过 300 个')
+        raise ValueError('清单资产为空或超过 600 个')
     dialogue_assets, media_assets, paths = {}, {}, set()
     for asset in assets:
         if not isinstance(asset, dict):
@@ -190,7 +190,7 @@ def validate_manifest(manifest):
             raise ValueError('资产标识、路径、哈希无效或重复')
         paths.add(expected_path.casefold())
     if not 0 < len(dialogue_assets) <= MAX_PARTS:
-        raise ValueError('对话片段为空或超过 100 个')
+        raise ValueError('对话片段为空或超过 200 个')
     for part_name, group in media_assets.items():
         if (part_name not in dialogue_assets or set(group) != set(MEDIA_TYPES)
                 or len({asset['recordingId'] for asset in group.values()}) != 1):
@@ -198,15 +198,17 @@ def validate_manifest(manifest):
     return dialogue_assets, media_assets
 
 
-def read_entry(archive, entry, maximum, destination=None):
+def read_entry(archive, entry, maximum, destination=None, progress=lambda count: None):
     digest, count = hashlib.sha256(), 0
     chunks = []
     with archive.open(entry) as source, (destination.open('xb') if destination else nullcontext()) as output:
         while True:
+            progress(0)
             chunk = source.read(min(CHUNK_BYTES, maximum - count + 1))
             if not chunk:
                 break
             count += len(chunk)
+            progress(len(chunk))
             if count > maximum or count > entry.file_size:
                 raise ValueError('ZIP 解压长度超过上限：' + entry.filename)
             digest.update(chunk)
@@ -249,18 +251,19 @@ def validate_zip_directory(source):
                     or disk_entries != entries or zip64_offset + 56 != end_offset - 20):
                 raise ValueError('ZIP64 目录结束记录无效')
             end_offset = zip64_offset
-    if (not 0 < entries <= 301 or not 0 < directory_size <= 32 * 1024 * 1024
+    if (not 0 < entries <= MAX_PARTS * 3 + 1 or not 0 < directory_size <= 32 * 1024 * 1024
             or directory_offset + directory_size != end_offset):
         raise ValueError('ZIP 文件数量、中央目录大小或位置超过限制')
     source.seek(0)
 
 
-def read_package(source, media_directory):
+def read_package(source, media_directory, progress=lambda fraction, phase: None):
+    progress(0, "检查 ZIP 目录")
     validate_zip_directory(source)
     with zipfile.ZipFile(source) as archive:
         entries = archive.infolist()
-        if not 0 < len(entries) <= 301:
-            raise ValueError('ZIP 文件数量为空或超过 301 个')
+        if not 0 < len(entries) <= MAX_PARTS * 3 + 1:
+            raise ValueError('ZIP 文件数量为空或超过 601 个')
         names, files, total = set(), {}, 0
         for entry in entries:
             name = entry.filename
@@ -280,7 +283,12 @@ def read_package(source, media_directory):
             files[name] = entry
         if 'manifest.json' not in files or files['manifest.json'].file_size > MAX_ENTRY_BYTES:
             raise ValueError('ZIP 根目录缺少清单或清单过大')
-        content, _, _ = read_entry(archive, files['manifest.json'], MAX_ENTRY_BYTES)
+        completed = 0
+        def advance(count):
+            nonlocal completed
+            completed += count
+            progress(min(0.99, completed / max(1, total)), '解压并校验文件')
+        content, _, _ = read_entry(archive, files['manifest.json'], MAX_ENTRY_BYTES, progress=advance)
         manifest = parse_json(content.decode('utf-8-sig'))
         dialogue_assets, media_assets = validate_manifest(manifest)
         if set(files) != {'manifest.json', *(asset['path'] for asset in manifest['assets'])}:
@@ -300,7 +308,7 @@ def read_package(source, media_directory):
         texts, tasks_by_part, previews = {}, {}, {}
         task_count, entry_count, delivery = 0, 0, None
         for part_name, asset in dialogue_assets.items():
-            content, digest, _ = read_entry(archive, files[asset['path']], MAX_ENTRY_BYTES)
+            content, digest, _ = read_entry(archive, files[asset['path']], MAX_ENTRY_BYTES, progress=advance)
             if digest != asset['sha256']:
                 raise ValueError('片段文件校验失败：' + asset['path'])
             text = content.decode('utf-8')
@@ -327,7 +335,9 @@ def read_package(source, media_directory):
                 if not isinstance(entries, list) or not entries:
                     raise ValueError('片段任务没有词条')
                 keys = set()
-                for entry in entries:
+                for index, entry in enumerate(entries):
+                    if index % 256 == 0:
+                        advance(0)
                     if not isinstance(entry, dict) or not valid_text(entry.get('key')) or entry['key'] in keys:
                         raise ValueError('词条标识无效或重复')
                     keys.add(entry['key'])
@@ -339,16 +349,17 @@ def read_package(source, media_directory):
         for part_name, group in media_assets.items():
             video, map_asset = group['localization-preview-video'], group['localization-preview-map']
             media_id = uuid4().hex
-            _, digest, _ = read_entry(archive, files[video['path']], MAX_VIDEO_BYTES, media_directory / (media_id + '.mp4'))
+            _, digest, _ = read_entry(archive, files[video['path']], MAX_VIDEO_BYTES, media_directory / (media_id + '.mp4'), progress=advance)
             if digest != video['sha256']:
                 raise ValueError('视频哈希校验失败：' + part_name)
-            content, digest, _ = read_entry(archive, files[map_asset['path']], MAX_ENTRY_BYTES)
+            content, digest, _ = read_entry(archive, files[map_asset['path']], MAX_ENTRY_BYTES, progress=advance)
             if digest != map_asset['sha256']:
                 raise ValueError('映射哈希校验失败：' + part_name)
             mapping = parse_json(content.decode('utf-8'))
             validate_map(mapping, manifest['projectId'], part_name, video['recordingId'], video['sha256'], task_package_names(tasks_by_part[part_name]))
             (media_directory / (media_id + '.json')).write_bytes(content)
             previews[part_name] = {'recordingId': video['recordingId'], 'map': mapping, 'mediaId': media_id}
+        progress(1, '校验完成')
         return {'manifest': manifest, 'assets': texts, 'previews': previews}
 
 
@@ -361,7 +372,7 @@ def write_package(output, document):
             validate_source_snapshots(entry)
         groups.setdefault(task['partName'], []).append(task)
     if not 0 < len(groups) <= MAX_PARTS:
-        raise ValueError('一次最多导出 100 个片段')
+        raise ValueError('一次最多导出 200 个片段')
     files, paths, text_total = {}, set(), 0
     for part_name, tasks in groups.items():
         path = part_asset_path(part_name)

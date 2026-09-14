@@ -4,12 +4,13 @@ mod package;
 mod workspace;
 mod media;
 mod updater;
+mod import_progress;
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
 use std::path::PathBuf;
 use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
-use std::sync::Mutex;
+use std::sync::{Arc, Mutex};
 use tauri::{Emitter, Manager};
 use tauri_plugin_dialog::{DialogExt, MessageDialogButtons};
 
@@ -20,6 +21,7 @@ struct NativeState {
     workspace_lock: Mutex<()>,
     cache_epoch: AtomicU64,
     media_import: Mutex<Option<media::StagedImport>>,
+    import_job: Mutex<Option<Arc<import_progress::ImportProgress>>>,
     media_urls: Mutex<HashMap<String, (PathBuf, PathBuf)>>,
 }
 
@@ -56,7 +58,7 @@ async fn workspace_spaces(app: tauri::AppHandle) -> Result<Vec<String>, String> 
     Ok(spaces)
 }
 
-fn read_selected(app: &tauri::AppHandle, path: PathBuf, space_id: Option<&str>) -> Result<Value, String> {
+fn read_selected(app: &tauri::AppHandle, path: PathBuf, space_id: Option<&str>, job: &import_progress::ImportProgress) -> Result<Value, String> {
     if path.extension().and_then(|value| value.to_str()).map(|value| value.eq_ignore_ascii_case("zip")) != Some(true) {
         return Err("请选择本地化 ZIP 压缩包".into());
     }
@@ -65,32 +67,67 @@ fn read_selected(app: &tauri::AppHandle, path: PathBuf, space_id: Option<&str>) 
     if pending.is_some() { return Err("请先确认或取消当前导入".into()); }
     let root = space_root(app, space_id)?;
     let mut stage = media::new_stage(&root)?;
-    let mut result = match package::read_package(&path, &mut stage) {
+    let mut result = match package::read_package(&path, &mut stage, &mut |fraction, phase| job.report(app, fraction, phase)) {
         Ok(result) => result,
         Err(error) => { let _ = media::discard(&stage); return Err(error); }
     };
+    if let Err(error) = job.report(app, 1.0, "校验完成") { let _ = media::discard(&stage); return Err(error); }
     result["fileName"] = json!(path.file_name().unwrap_or_default().to_string_lossy());
     *pending = Some(stage);
     Ok(result)
 }
 
 #[tauri::command]
-async fn choose_package(app: tauri::AppHandle, space_id: Option<String>) -> Result<Option<Value>, String> {
-    let selected = app.dialog().file().set_title("导入本地化 ZIP")
-        .add_filter("本地化 ZIP", &["zip"]).blocking_pick_file();
-    match selected {
-        Some(path) => read_selected(&app, path.into_path().map_err(|error| error.to_string())?, space_id.as_deref()).map(Some),
-        None => Ok(None),
-    }
+async fn begin_package_import(app: tauri::AppHandle) -> Result<String, String> {
+    let state = app.state::<NativeState>();
+    let mut active = state.import_job.lock().map_err(|error| error.to_string())?;
+    if active.is_some() { return Err("另一个导入正在进行".into()); }
+    let job = Arc::new(import_progress::ImportProgress::new());
+    let id = job.id.clone();
+    *active = Some(job);
+    Ok(id)
 }
 
 #[tauri::command]
-async fn import_dropped_package(app: tauri::AppHandle, space_id: Option<String>) -> Result<Value, String> {
-    let paths = std::mem::take(&mut *app.state::<NativeState>().dropped_paths.lock().map_err(|error| error.to_string())?);
-    if paths.len() != 1 {
-        return Err("请一次拖入一个 ZIP 压缩包".into());
-    }
-    read_selected(&app, paths.into_iter().next().ok_or("没有待导入的文件")?, space_id.as_deref())
+async fn cancel_package_import(app: tauri::AppHandle, request_id: String) -> Result<(), String> {
+    let state = app.state::<NativeState>();
+    let active = state.import_job.lock().map_err(|error| error.to_string())?;
+    if let Some(job) = active.as_ref().filter(|job| job.id == request_id) { job.cancel(); }
+    Ok(())
+}
+
+async fn run_package_import(app: tauri::AppHandle, space_id: Option<String>, request_id: String, pick: bool) -> Result<Option<Value>, String> {
+    let job = app.state::<NativeState>().import_job.lock().map_err(|error| error.to_string())?
+        .as_ref().filter(|job| job.id == request_id).cloned().ok_or("导入任务已失效")?;
+    let worker_app = app.clone();
+    let result = tauri::async_runtime::spawn_blocking(move || {
+        job.report(&worker_app, 0.0, "读取压缩包")?;
+        let path = if pick {
+            let selected = worker_app.dialog().file().set_title("导入本地化 ZIP")
+                .add_filter("本地化 ZIP", &["zip"]).blocking_pick_file();
+            let Some(path) = selected else { return Ok(None); };
+            path.into_path().map_err(|error| error.to_string())?
+        } else {
+            let paths = std::mem::take(&mut *worker_app.state::<NativeState>().dropped_paths.lock().map_err(|error| error.to_string())?);
+            if paths.len() != 1 { return Err("请一次拖入一个 ZIP 压缩包".into()); }
+            paths.into_iter().next().ok_or("没有待导入的文件")?
+        };
+        read_selected(&worker_app, path, space_id.as_deref(), &job).map(Some)
+    }).await.map_err(|error| error.to_string());
+    let state = app.state::<NativeState>();
+    let mut active = state.import_job.lock().map_err(|error| error.to_string())?;
+    if active.as_ref().is_some_and(|job| job.id == request_id) { *active = None; }
+    result?
+}
+
+#[tauri::command]
+async fn choose_package(app: tauri::AppHandle, space_id: Option<String>, request_id: String) -> Result<Option<Value>, String> {
+    run_package_import(app, space_id, request_id, true).await
+}
+
+#[tauri::command]
+async fn import_dropped_package(app: tauri::AppHandle, space_id: Option<String>, request_id: String) -> Result<Value, String> {
+    run_package_import(app, space_id, request_id, false).await?.ok_or("没有待导入的文件".into())
 }
 
 #[tauri::command]
@@ -138,6 +175,7 @@ async fn workspace_read(app: tauri::AppHandle, store: String, key: String, space
 
 #[tauri::command]
 async fn workspace_save(app: tauri::AppHandle, mut snapshot: Value, expected_revision: u64, backup_reason: Option<String>, media_import_token: Option<String>, space_id: Option<String>, expected_cache_epoch: Option<u64>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     let state = app.state::<NativeState>();
     let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
     if expected_cache_epoch.unwrap_or(0) != state.cache_epoch.load(Ordering::SeqCst) { return Err("缓存已被清空，请重新打开工作区；旧数据未重新保存".into()); }
@@ -171,6 +209,7 @@ async fn workspace_save(app: tauri::AppHandle, mut snapshot: Value, expected_rev
         if let Ok(mut grants) = state.media_urls.lock() { grants.retain(|_, (_, path)| path.is_file()); }
         Ok(result)
     }
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -289,7 +328,7 @@ fn main() {
                 None => tauri::http::Response::builder().status(404).body(Vec::new()).unwrap_or_default(),
             }
         })
-        .invoke_handler(tauri::generate_handler![choose_package, import_dropped_package, export_package, confirm_action, finish_exit, workspace_read, workspace_save, workspace_save_task, workspace_spaces, workspace_cache_epoch, clear_all_cache, relocate_media_import, discard_media_import, get_preview_media, updater::repository_history, updater::check_app_update, updater::install_app_update])
+        .invoke_handler(tauri::generate_handler![begin_package_import, cancel_package_import, choose_package, import_dropped_package, export_package, confirm_action, finish_exit, workspace_read, workspace_save, workspace_save_task, workspace_spaces, workspace_cache_epoch, clear_all_cache, relocate_media_import, discard_media_import, get_preview_media, updater::repository_history, updater::check_app_update, updater::install_app_update])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                 if let Ok(mut dropped) = window.state::<NativeState>().dropped_paths.lock() {

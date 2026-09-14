@@ -14,6 +14,7 @@ from urllib.request import Request, urlopen
 from uuid import uuid4
 
 from media_store import MediaError, MediaStore
+from import_jobs import ImportJobs
 from package_io import CHUNK_BYTES, MAX_EXPORT_BYTES, MAX_ZIP_BYTES, parse_json, write_package
 
 ROOT = Path(__file__).resolve().parent
@@ -75,6 +76,7 @@ class EditorServer(ThreadingHTTPServer):
         self.space_stores = {}
         self.space_lock = threading.Lock()
         self.operation_lock = threading.RLock()
+        self.import_jobs = ImportJobs()
         super().__init__(('127.0.0.1', port), EditorHandler)
         self.origin = f'http://127.0.0.1:{self.server_port}'
 
@@ -194,7 +196,7 @@ class EditorHandler(BaseHTTPRequestHandler):
             self.reply(200, (ROOT / 'prototype.html').read_bytes(), 'text/html; charset=utf-8')
         elif path == '/app-icon.svg':
             self.reply(200, (ROOT / 'app-icon.svg').read_bytes(), 'image/svg+xml')
-        elif path in ('/workspace-store.js', '/preview-player.js'):
+        elif path in ('/workspace-store.js', '/preview-player.js', '/import-worker.js'):
             try:
                 self.reply(200, (ROOT / path[1:]).read_bytes(), 'text/javascript; charset=utf-8')
             except FileNotFoundError:
@@ -262,9 +264,45 @@ class EditorHandler(BaseHTTPRequestHandler):
         if not self.valid_host() or self.headers.get_all('Origin') != [self.server.origin]:
             self.reply(403, {'error': '不允许跨站操作'})
             return
+        # Progress/cancel must remain reachable while upload holds the operation lock.
+        if self.path in ('/api/import/start', '/api/import/status', '/api/import/cancel'):
+            self.handle_import_control()
+            return
         if self.path not in ('/api/export', '/api/import', '/api/media/commit', '/api/media/discard', '/api/media/info', '/api/media/relocate', '/api/cache/clear'):
             self.reply(404, {'error': '接口不存在'})
             return
+    def handle_import_control(self):
+        self.close_connection = True
+        if not self.valid_host() or self.headers.get_all('Origin') != [self.server.origin]:
+            self.reply(403, {'error': '不允许跨站操作'})
+            return
+        try:
+            if self.headers.get_content_type() != 'application/json' or self.headers.get('Transfer-Encoding'):
+                raise ValueError('请求文件类型不正确')
+            lengths = self.headers.get_all('Content-Length', [])
+            if len(lengths) != 1 or not re.fullmatch(r'[0-9]{1,4}', lengths[0]) or not 0 < int(lengths[0]) <= 1024:
+                raise ValueError('请求长度无效')
+            self.connection.settimeout(10)
+            request = parse_json(self.rfile.read(int(lengths[0])).decode('utf-8'))
+            space = self.headers.get('X-Localization-Space', '')
+            if space and not re.fullmatch(r'[a-z][a-z0-9_-]{0,31}', space):
+                raise ValueError('语言空间标识无效')
+            if self.path == '/api/import/start':
+                if request != {}:
+                    raise ValueError('导入参数无效')
+                result = {'requestId': self.server.import_jobs.start(space)}
+            else:
+                if not isinstance(request, dict) or set(request) != {'requestId'} or not isinstance(request['requestId'], str):
+                    raise ValueError('导入任务标识无效')
+                action = 'cancel' if self.path.endswith('/cancel') else 'status'
+                result = self.server.import_jobs.access(request['requestId'], space, action)
+                if action == 'cancel' and result.get('token'):
+                    with self.server.operation_lock:
+                        self.store_for_space(space).discard(result.pop('token'))
+            self.reply(200, result)
+        except (ValueError, OSError) as error:
+            self.reply(400, {'error': str(error)})
+
         expected_type = 'application/zip' if self.path == '/api/import' else 'application/json'
         if self.headers.get_content_type() != expected_type or self.headers.get('Transfer-Encoding'):
             self.reply(415, {'error': '请求文件类型不正确'})
@@ -280,8 +318,24 @@ class EditorHandler(BaseHTTPRequestHandler):
                 return
             self.connection.settimeout(30)
             if self.path == '/api/import':
-                result = self.media_store.import_stream(self.rfile, length)
-                self.reply(200, result)
+                identifier = self.headers.get('X-Import-Request', '')
+                space = self.headers.get('X-Localization-Space', '')
+                jobs = self.server.import_jobs
+                jobs.access(identifier, space, 'run')
+                result = None
+                try:
+                    progress = lambda fraction, phase: jobs.report(identifier, space, fraction, phase)
+                    result = self.media_store.import_stream(self.rfile, length, progress)
+                    progress(1, '校验完成')
+                    self.reply(200, result)
+                except (ValueError, OSError):
+                    if result:
+                        self.media_store.discard(result['mediaImportToken'])
+                    raise
+                finally:
+                    token = result['mediaImportToken'] if result else None
+                    if jobs.finish(identifier, token) and token:
+                        self.media_store.discard(token)
                 return
             payload = self.rfile.read(length)
             if len(payload) != length:

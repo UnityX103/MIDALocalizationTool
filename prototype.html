@@ -184,7 +184,7 @@ async function switchSpace(space){
 }
 let storageReady=false,saveQueue=Promise.resolve(),editRevision=0;
 const pendingTaskSaves=new Map();
-let restoreFocus=null,dialogCleanup=null,importInProgress=false;
+let restoreFocus=null,dialogCleanup=null,importInProgress=false,cancelActiveImport=null;
 let previews=Object.create(null);
 const requiresWork=entry=>editingEntries.has(entry)||entry.review.state!=='confirmed';
 const pending=task=>task.entries.filter(requiresWork).length;
@@ -336,11 +336,11 @@ function restoreWorkspace(snapshot){
  find('#loc-search').value=state.search;find('#loc-filter').value=state.filter;
  find('#loc-data-origin').textContent='已恢复本地工作区';renderAll();
 }
-function saveWorkspace(reason=null,mediaImportToken=null){
+function saveWorkspace(reason=null,mediaImportToken=null,importBackup=false){
  if(historyView||historyBusy)return Promise.reject(new Error('历史记录只读，请先返回当前最新版本'));
  if(clearingCache)return Promise.reject(new Error('正在清空缓存，已停止保存'));
  if(!tasks.length){return Promise.resolve(null);}
- if(importInProgress&&!mediaImportToken)return Promise.reject(new Error('正在导入，请等待导入完成后保存'));
+ if(importInProgress&&!mediaImportToken&&!importBackup)return Promise.reject(new Error('正在导入，请等待导入完成后保存'));
 
  if(!storageReady)return Promise.reject(new Error('本地存储尚不可用，请在偏好中检查备份；当前内容尚未保存'));
  const snapshot=captureWorkspace(),revision=editRevision;
@@ -560,7 +560,7 @@ function moveToNextPending(openEditor=false){
  return true;
 }
 function renderAll(){root.classList.toggle('stacked',state.layout==='上下排列');find('#loc-taskpane').classList.toggle('collapsed',!state.menu);find('#loc-collapse').setAttribute('aria-label',state.menu?'收起任务菜单':'展开任务菜单');renderTasks();renderEntries();updateSummary();previewPlayer.refresh();}
-function closeDialog(){if(importInProgress||clearingCache||historyBusy||(updateDialogActive&&(updateInfo?.mandatory||appUpdateInstalling)))return;updateDialogActive=false;find('#loc-close').hidden=false;const cleanup=dialogCleanup;dialogCleanup=null;if(cleanup)cleanup();find('#loc-overlay').hidden=true;if(restoreFocus&&restoreFocus.isConnected)restoreFocus.focus();}
+function closeDialog(){if(importInProgress){cancelActiveImport?.();return;}if(clearingCache||historyBusy||(updateDialogActive&&(updateInfo?.mandatory||appUpdateInstalling)))return;updateDialogActive=false;find('#loc-close').hidden=false;const cleanup=dialogCleanup;dialogCleanup=null;if(cleanup)cleanup();find('#loc-overlay').hidden=true;if(restoreFocus&&restoreFocus.isConnected)restoreFocus.focus();}
 function openDialog(title){if(updateDialogActive&&(updateInfo?.mandatory||appUpdateInstalling))return element('div');closeDialog();restoreFocus=document.activeElement;find('#loc-dialog-title').textContent=title;const content=find('#loc-dialog-content');content.replaceChildren();find('#loc-overlay').hidden=false;find('#loc-close').focus();return content;}
 function packet(mode){requireValue(tasks.length&&currentProjectId&&fileVersion&&state.selected.size,'请先导入 ZIP 并勾选交付任务。');exportSequence=Math.max(exportSequence,fileVersion.revision)+1;changeSaved();return {format:'mida-localization',formatVersion:1,projectId:currentProjectId,packageId:localizationUuid(),parentPackageId:currentPackageId,fileVersion:{lineageId:fileVersion.lineageId,revision:exportSequence},exportedAt:new Date().toISOString(),deliveryState:mode,tasks:[...state.selected].sort((left,right)=>left-right).map(index=>({...tasks[index],entries:tasks[index].entries.map(entry=>({...entry}))}))};}
 function isLegacyTaskWideReview(old,entry){
@@ -572,41 +572,52 @@ function isLegacyTaskWideReview(old,entry){
   old.localizationSourceAtExport===entry.localizationSourceAtExport&&old.translationAtExport===entry.translationAtExport&&
   old.translation===old.translationAtExport&&entry.translation===entry.translationAtExport&&entry.translation.trim().length>0;
 }
-function planMerge(incoming){
+async function cloneImportTask(task,checkpoint){
+ const clone={...task,entries:[]};
+ for(const [index,entry] of task.entries.entries()){
+  if(index%256===0)await checkpoint();
+  clone.entries.push(structuredClone(entry));
+ }
+ return clone;
+}
+async function planMerge(incoming,checkpoint){
  const index=tasks.findIndex(task=>task.partName===incoming.task.partName&&task.language===incoming.task.language);
- if(index<0)return {index,merged:structuredClone(incoming.task),unchanged:false,stats:{reused:0,changed:0,added:incoming.task.entries.length,removed:0,unfinished:0,conflicts:0}};
+ if(index<0)return {index,merged:await cloneImportTask(incoming.task,checkpoint),unchanged:false,stats:{reused:0,changed:0,added:incoming.task.entries.length,removed:0,unfinished:0,conflicts:0}};
  const previous=tasks[index];
  if(incoming.task.taskVersion<previous.taskVersion)throw new Error('这是旧版本 v'+incoming.task.taskVersion+'，不会覆盖当前 v'+previous.taskVersion+'。');
  if(incoming.task.taskVersion===previous.taskVersion){
   if(incoming.task.sourceHash!==previous.sourceHash||incoming.task.targetLocalizationHashAtExport!==previous.targetLocalizationHashAtExport)throw new Error('同一任务版本的内容标识不一致，未覆盖现有编辑。');
   const incomingByKey=new Map(incoming.task.entries.map(entry=>[entry.key,entry]));
-  const snapshotUpdates=previous.entries.flatMap(entry=>{
+  const snapshotUpdates=[];
+  for(const [entryIndex,entry] of previous.entries.entries()){
+   if(entryIndex%256===0)await checkpoint();
    const next=incomingByKey.get(entry.key);
-   if(!next||Object.hasOwn(entry,'englishTranslationAtExport')||!Object.hasOwn(next,'englishTranslationAtExport'))return [];
+   if(!next||Object.hasOwn(entry,'englishTranslationAtExport')||!Object.hasOwn(next,'englishTranslationAtExport'))continue;
    if(['currentSource','localizationSourceAtExport','translationAtExport'].some(field=>entry[field]!==next[field]))throw new Error('同一任务版本的来源快照不一致，未补充旧英文。');
-   return [{key:entry.key,englishTranslationAtExport:next.englishTranslationAtExport}];
-  });
+   snapshotUpdates.push({key:entry.key,englishTranslationAtExport:next.englishTranslationAtExport});
+  }
   return {index,unchanged:true,snapshotUpdates};
  }
  const previousByKey=new Map(previous.entries.map(entry=>[entry.key,entry]));
  const incomingKeys=new Set(incoming.task.entries.map(entry=>entry.key));
  if(incomingKeys.size!==incoming.task.entries.length)throw new Error('新版存在重复词条，未修改当前任务。');
  const stats={reused:0,changed:0,added:0,removed:previous.entries.filter(entry=>!incomingKeys.has(entry.key)).length,unfinished:0,conflicts:0};
- const merged=JSON.parse(JSON.stringify(incoming.task));
- merged.entries=merged.entries.map(entry=>{
+ const merged={...incoming.task,entries:[]};
+ for(const [entryIndex,incomingEntry] of incoming.task.entries.entries()){
+  if(entryIndex%256===0)await checkpoint();
+  const entry=structuredClone(incomingEntry);merged.entries.push(entry);
   const old=previousByKey.get(entry.key);
-  if(!old){stats.added++;entry.review={state:'pending',reason:'新版新增对话，请填写译文'};return entry;}
+  if(!old){stats.added++;entry.review={state:'pending',reason:'新版新增对话，请填写译文'};continue;}
   const draft=editingEntries.get(old);const existingText=draft?.text??old.translation;
   const sameSource=old.currentSource===entry.currentSource&&old.speakerKey===entry.speakerKey;
   const targetChanged=old.translationAtExport!==entry.translationAtExport;
   if(draft)stats.unfinished++;
-  if(!sameSource){stats.changed++;entry.translation=draft?existingText:(existingText||entry.translation);entry.review={state:'pending',reason:old.currentSource!==entry.currentSource?'新版原文已变化，已保留旧译文供修改':'新版发言人已变化，请检查译文'};return entry;}
-  if(targetChanged&&existingText!==entry.translationAtExport){stats.conflicts++;entry.translation=draft?existingText:(existingText||entry.translation);entry.review={state:'pending',reason:'新版也更新了译文，已保留本地内容，请编辑后确定'};return entry;}
-  if(!draft&&isLegacyTaskWideReview(old,entry)){stats.reused++;return entry;}
+  if(!sameSource){stats.changed++;entry.translation=draft?existingText:(existingText||entry.translation);entry.review={state:'pending',reason:old.currentSource!==entry.currentSource?'新版原文已变化，已保留旧译文供修改':'新版发言人已变化，请检查译文'};continue;}
+  if(targetChanged&&existingText!==entry.translationAtExport){stats.conflicts++;entry.translation=draft?existingText:(existingText||entry.translation);entry.review={state:'pending',reason:'新版也更新了译文，已保留本地内容，请编辑后确定'};continue;}
+  if(!draft&&isLegacyTaskWideReview(old,entry)){stats.reused++;continue;}
   if(existingText.trim()){stats.reused++;entry.translation=existingText;entry.review={state:draft?'pending':old.review.state,reason:draft?'保留了尚未确定的编辑内容':old.review.reason};if(old.review.state==='pending'&&!draft)entry.review.reason=old.review.reason||old.issuesAtExport.map(issue=>issueNames[issue]).join(' · ');}
   else {if(draft)entry.translation=existingText;entry.review={state:'pending',reason:'译文仍未完成，请编辑后确定'};}
-  return entry;
- });
+ }
  return {index,previous,merged,stats,unchanged:false};
 }
 function requireValue(condition,message){if(!condition)throw new Error(message);}
@@ -623,7 +634,7 @@ function validateManifest(value,checkCurrent=true){
  requireValue(!currentManifest||value.fileVersion.revision>=currentManifest.fileVersion.revision,'清单版本落后，未覆盖当前任务。');
  requireValue(!currentManifest||value.fileVersion.revision!==currentManifest.fileVersion.revision||value.packageId===currentManifest.packageId,'相同清单版本对应不同包，未覆盖当前任务。');
  }
- requireValue(Array.isArray(value.assets)&&value.assets.length>0&&value.assets.length<=300,'清单资产列表为空或超出上限。');
+ requireValue(Array.isArray(value.assets)&&value.assets.length>0&&value.assets.length<=600,'清单资产列表为空或超出上限。');
  const paths=new Set(),ids=new Set(),parts=new Set(),media=new Map();
  for(const asset of value.assets){
   requireValue(asset&&typeof asset.id==='string'&&asset.id&&!ids.has(asset.id),'资产 ID 缺失或重复。');ids.add(asset.id);
@@ -639,7 +650,7 @@ function validateManifest(value,checkCurrent=true){
   }
   requireValue(validHash(asset.sha256),'资产缺少有效 SHA-256：'+asset.path);
  }
- requireValue(parts.size>0&&parts.size<=100,'本次导入片段数必须为 1 至 100。');
+ requireValue(parts.size>0&&parts.size<=200,'本次导入片段数必须为 1 至 200。');
  for(const [partName,pair] of media)requireValue(parts.has(partName)&&pair.length===2&&pair[0].recordingId===pair[1].recordingId,'视频与映射必须成对且属于同一录制。');
  return value;
 }
@@ -654,7 +665,7 @@ function validatePreviewReferences(result,manifest){
  }
  requireValue(Object.keys(incoming).length===Object.keys(references).length,'存在未声明的视频引用。');return references;
 }
-function validateDialogueData(data,manifest,taskKeys,asset){
+async function validateDialogueData(data,manifest,taskKeys,asset,checkpoint){
  requireValue(data&&data.format==='mida-localization'&&data.formatVersion===1&&!data.demo,'不支持的对话数据格式。');
  requireValue(data.projectId===manifest.projectId&&data.packageId===manifest.packageId&&validVersion(data.fileVersion)&&data.fileVersion.lineageId===manifest.fileVersion.lineageId&&data.fileVersion.revision===manifest.fileVersion.revision,'数据文件与清单的项目、版本或包标识不一致。');
  requireValue(Array.isArray(data.tasks)&&data.tasks.length>0&&data.tasks.length<=1000,'对话任务列表为空或超出上限。');
@@ -666,7 +677,8 @@ function validateDialogueData(data,manifest,taskKeys,asset){
   requireValue(['latest','outdated','unsupported'].includes(task.versionStatusAtExport)&&typeof task.reviewAllRequired==='boolean','任务版本状态无效。');
   requireValue(Array.isArray(task.entries)&&task.entries.length>0&&task.entries.length<=100000,'词条列表为空或超出上限。');
   const keys=new Set();
-  for(const entry of task.entries){
+  for(const [entryIndex,entry] of task.entries.entries()){
+   if(entryIndex%256===0)await checkpoint();
    requireValue(entry&&typeof entry.key==='string'&&entry.key&&!keys.has(entry.key),'词条 key 缺失或重复。');keys.add(entry.key);
    for(const field of ['speakerKey','speakerChineseName','currentSource','localizationSourceAtExport','translationAtExport','translation'])requireValue(typeof entry[field]==='string','词条 '+entry.key+' 的 '+field+' 不是文本。');
    LocalizationWorkspaceStore.readEnglishSnapshot(entry,task.language);
@@ -683,14 +695,53 @@ function showVersionImport(initialFile){
  if(historyView||historyBusy||importInProgress||switchingSpace||clearingCache||appUpdateInstalling||updateDialogActive||!storageReady){setNotice('请先返回当前最新版本，并等待当前操作完成后导入。');return;}
  let importStore=workspaceStore,targetSpace=null;
  const content=openDialog(tasks.length?'导入新版本':'导入 ZIP');let manifest=null,loaded=null,loadToken=0,mediaImportToken=null,incomingPreviews=Object.create(null);
- const discard=token=>{if(token)(nativeApp?invokeNative('discard_media_import',{token}):importStore.mediaRequest('discard',{token})).catch(()=>{});};
- dialogCleanup=()=>{loadToken++;discard(mediaImportToken);mediaImportToken=null;};
- const headline=element('p','helper','正在识别拖入的 ZIP 压缩包…');
- const preview=element('div');const actions=element('div','dialogbottom');const cancel=element('button','','取消');cancel.addEventListener('click',closeDialog);const apply=element('button','primary','导入并合并');apply.disabled=true;actions.append(cancel,apply);
- content.append(headline,preview,actions);
- const createPlans=()=>loaded.map(task=>currentProjectId?planMerge({task}):{index:-1,merged:structuredClone(task),unchanged:false,stats:{reused:0,changed:0,added:task.entries.length,removed:0,unfinished:0,conflicts:0}});
- const describe=()=>{
-  const plans=createPlans();preview.replaceChildren();
+ let cancelled=false,committing=false,busy=true,requestId=null,unlisten=null,pollTimer=null,parser=null,rejectParse=null,disposed=false,unlocked=false,cancelCompletion=null;
+ const savedInert=new Map([...root.children].filter(child=>child.id!=='loc-overlay').map(child=>[child,child.inert]));
+ const unlock=()=>{if(unlocked)return;unlocked=true;for(const [child,inert] of savedInert)child.inert=inert;root.removeAttribute('aria-busy');find('#loc-close').disabled=false;importInProgress=false;cancelActiveImport=null;};
+ for(const child of savedInert.keys())child.inert=true;
+ importInProgress=true;previewPlayer.video.pause();
+ const control=async(action,payload={})=>{
+  const response=await fetch('/api/import/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Localization-Space':importStore.spaceId},body:JSON.stringify(payload),signal:AbortSignal.timeout(10000)});
+  const result=await response.json();requireValue(response.ok,result.error||'导入服务不可用');return result;
+ };
+ const discard=async token=>{if(token)await(nativeApp?invokeNative('discard_media_import',{token}):importStore.mediaRequest('discard',{token}));};
+ const stopProgress=()=>{clearTimeout(pollTimer);pollTimer=null;if(unlisten){unlisten();unlisten=null;}};
+ const headline=element('p','helper','正在识别 ZIP 压缩包…');
+ const progress=element('progress');progress.max=100;progress.value=0;progress.style.cssText='width:100%;height:16px;accent-color:var(--loc-blue)';progress.setAttribute('aria-label','导入进度');
+ const progressText=element('p','helper','准备导入 · 0%');progressText.setAttribute('role','status');progressText.setAttribute('aria-live','polite');
+ const report=(value,text)=>{if(cancelled)return;progress.value=Math.max(progress.value,value);progressText.textContent=text+' · '+Math.floor(progress.value)+'%';};
+ const checkpoint=async()=>{await new Promise(resolve=>setTimeout(resolve,0));if(cancelled)throw new Error('导入已取消');};
+ const stopParser=()=>{parser?.terminate();parser=null;if(rejectParse){rejectParse(new Error('导入已取消'));rejectParse=null;}};
+ const parsePart=(text,sha256)=>new Promise((resolve,reject)=>{
+  if(cancelled){reject(new Error('导入已取消'));return;}
+  parser??=new Worker('import-worker.js');rejectParse=reject;
+  parser.onmessage=event=>{rejectParse=null;if(event.data.error)reject(new Error(event.data.error));else resolve(event.data.data);};
+  parser.onerror=()=>{rejectParse=null;reject(new Error('后台解析失败，请重新导入。'));};
+  parser.postMessage({text,sha256});
+ });
+ const preview=element('div');const actions=element('div','dialogbottom');const cancel=element('button','','取消导入');const apply=element('button','primary','导入并合并');apply.disabled=true;actions.append(cancel,apply);
+ const finishCancelled=()=>cancelCompletion??=(async()=>{if(disposed)return;await discard(mediaImportToken);if(disposed)return;mediaImportToken=null;unlock();closeDialog();setNotice('导入已取消，原工作区保持不变。');})().catch(error=>{cancelCompletion=null;throw error;});
+ const requestCancel=async()=>{
+  if(disposed||committing||cancelled)return;
+  cancelled=true;stopParser();cancel.disabled=true;apply.disabled=true;progressText.textContent='正在取消，等待当前处理结束并清理临时数据…';
+  try{
+   if(requestId)await(nativeApp?invokeNative('cancel_package_import',{requestId}):control('cancel',{requestId}));
+   if(!disposed&&!busy)await finishCancelled();
+  }catch(error){if(disposed)return;progressText.textContent='取消请求失败：'+error.message+'；可重试取消。';cancelled=false;cancel.disabled=false;}
+ };
+ cancel.addEventListener('click',requestCancel);cancelActiveImport=requestCancel;
+ dialogCleanup=()=>{disposed=true;loadToken++;stopProgress();stopParser();discard(mediaImportToken).catch(error=>setNotice('临时数据清理失败：'+error.message));mediaImportToken=null;unlock();};
+ content.append(headline,progress,progressText,preview,actions);cancel.focus();
+ const watchProgress=async()=>{
+  if(!requestId||cancelled)return;
+  const watchedId=requestId;
+  try{const status=await control('status',{requestId:watchedId});if(requestId!==watchedId)return;report(status.fraction*60,status.phase);if(status.done)return;}
+  catch(error){if(requestId!==watchedId)return;if(!cancelled)progressText.textContent='等待导入服务响应…';}
+  if(busy&&!cancelled)pollTimer=setTimeout(watchProgress,250);
+ };
+ const createPlans=async(start=75,end=80)=>{const plans=[];for(const [index,task] of loaded.entries()){await checkpoint();plans.push(currentProjectId?await planMerge({task},checkpoint):{index:-1,merged:await cloneImportTask(task,checkpoint),unchanged:false,stats:{reused:0,changed:0,added:task.entries.length,removed:0,unfinished:0,conflicts:0}});report(start+(end-start)*(index+1)/loaded.length,'计算片段合并');}return plans;};
+ const describe=async()=>{
+  const plans=await createPlans();preview.replaceChildren();
   for(let index=0;index<plans.length;index++){
    const plan=plans[index],task=loaded[index];const text=plan.unchanged?'版本相同，保留已有编辑'+(plan.snapshotUpdates.length?' · 补充 '+plan.snapshotUpdates.length+' 条旧英文快照':''):`复用 ${plan.stats.reused} · 变化 ${plan.stats.changed} · 新增 ${plan.stats.added} · 移出 ${plan.stats.removed} · 冲突 ${plan.stats.conflicts}`;
    preview.append(element('p','helper',task.partName+' / '+languageLabel(task.language)+'：'+text));
@@ -699,34 +750,38 @@ function showVersionImport(initialFile){
   apply.disabled=false;
  };
  const loadArchive=async(file)=>{
-  const token=++loadToken;discard(mediaImportToken);mediaImportToken=null;incomingPreviews=Object.create(null);manifest=null;loaded=null;targetSpace=null;apply.textContent='导入并合并';apply.disabled=true;preview.replaceChildren();
+  const token=++loadToken;mediaImportToken=null;incomingPreviews=Object.create(null);manifest=null;loaded=null;targetSpace=null;apply.textContent='导入并合并';apply.disabled=true;preview.replaceChildren();
   const isCurrent=()=>token===loadToken&&content.contains(apply)&&!find('#loc-overlay').hidden;
   try{
    let result,fileName;
    if(nativeApp){
+    unlisten=await nativeApp.event.listen('mida-import-progress',event=>{if(event.payload.requestId===requestId)report(event.payload.fraction*60,event.payload.phase);});
+    requestId=await invokeNative('begin_package_import');
+    if(cancelled)await invokeNative('cancel_package_import',{requestId});
     headline.textContent='正在读取并校验压缩包…';
-    result=await invokeNative('import_dropped_package',{spaceId:importStore.spaceId});
+    result=await invokeNative('import_dropped_package',{spaceId:importStore.spaceId,requestId});
     if(!isCurrent()){discard(result?.mediaImportToken);return;}if(!result){headline.textContent='已取消选择，已有编辑保持不变。';return;}fileName=result.fileName;
    }else{
     requireValue(file&&/\.zip$/i.test(file.name),'请选择一个 ZIP 压缩包。');
     requireValue(file.size>0&&file.size<=2*1024*1024*1024,'压缩包为空或超过 2 GiB。');
     fileName=file.name;headline.textContent='正在解压和校验 '+fileName+'…';
-    const response=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/zip','X-Localization-Space':importStore.spaceId},body:file});
+    requestId=(await control('start')).requestId;
+    if(cancelled){await control('cancel',{requestId});throw new Error('导入已取消');}
+    watchProgress();
+    const response=await fetch('/api/import',{method:'POST',headers:{'Content-Type':'application/zip','X-Localization-Space':importStore.spaceId,'X-Import-Request':requestId},body:file});
     result=await response.json();if(!isCurrent()){discard(result?.mediaImportToken);return;}
     requireValue(response.ok,result.error||'压缩包读取失败。');
    }
-   mediaImportToken=result.mediaImportToken;requireValue(typeof mediaImportToken==='string'&&mediaImportToken,'本机导入服务需要升级，缺少安全媒体事务标识。');
+   stopProgress();requestId=null;
+   mediaImportToken=result.mediaImportToken;await checkpoint();requireValue(typeof mediaImportToken==='string'&&mediaImportToken,'本机导入服务需要升级，缺少安全媒体事务标识。');
    manifest=validateManifest(result.manifest,false);incomingPreviews=validatePreviewReferences(result,manifest);
    const allTasks=[],taskKeys=new Set();
-   for(const asset of manifest.assets.filter(item=>item.type==='localization-dialogues')){
+   const dialogueAssets=manifest.assets.filter(item=>item.type==='localization-dialogues');
+   for(const [assetIndex,asset] of dialogueAssets.entries()){
+    report(60+15*assetIndex/dialogueAssets.length,'整理片段 '+(assetIndex+1)+' / '+dialogueAssets.length);await checkpoint();
     const text=result.assets[asset.path];requireValue(typeof text==='string','缺少清单资产：'+asset.path);
-    if(!nativeApp){
-     requireValue(globalThis.crypto?.subtle,'当前预览环境不支持文件哈希校验，请使用本机 localhost 预览。');
-     const digest=await crypto.subtle.digest('SHA-256',new TextEncoder().encode(text));if(!isCurrent())return;
-     const hash=Array.from(new Uint8Array(digest),value=>value.toString(16).padStart(2,'0')).join('');
-     requireValue(hash===asset.sha256,'文件内容与清单不一致：'+asset.path+'。请重新导出完整版本。');
-    }
-    allTasks.push(...validateDialogueData(JSON.parse(text),manifest,taskKeys,asset));
+    const data=await parsePart(text,nativeApp?null:asset.sha256);
+    allTasks.push(...await validateDialogueData(data,manifest,taskKeys,asset,checkpoint));
    }
    requireValue(allTasks.length<=1000,'本次导入超过 1000 个语言任务。');
    const languages=[...new Set(allTasks.map(task=>task.language))];
@@ -741,37 +796,51 @@ function showVersionImport(initialFile){
     const exists=targetSpace===''||knownSpaces.has(targetSpace);
     preview.replaceChildren(element('p','helper','当前为 '+languageLabel(spaceLanguage())+' 空间，导入包为 '+languageLabel(languages[0])+'。是否'+(exists?'切换到对应空间':'创建新空间')+'并导入？取消不会更改任何空间。'));
     apply.textContent='确定';apply.disabled=false;
-   }else describe();
-  }catch(error){if(isCurrent()){discard(mediaImportToken);mediaImportToken=null;loaded=null;headline.textContent='压缩包未导入，已有编辑保持不变。';preview.replaceChildren(element('p','helper pending',error.message));}}
+   }else await describe();
+   report(80,'校验完成，等待确认导入');
+  }catch(error){
+   if(requestId)await(nativeApp?invokeNative('cancel_package_import',{requestId}):control('cancel',{requestId})).catch(()=>{});
+   if(isCurrent()){
+    if(cancelled){try{await finishCancelled();}catch(cleanupError){cancelled=false;cancel.disabled=false;progressText.textContent='临时数据清理失败：'+cleanupError.message;}}
+    else{await discard(mediaImportToken).catch(cleanupError=>setNotice(cleanupError.message));mediaImportToken=null;loaded=null;headline.textContent='压缩包未导入，已有编辑保持不变。';preview.replaceChildren(element('p','helper pending',error.message));progressText.textContent='导入失败';}
+   }
+  }finally{busy=false;requestId=null;stopProgress();stopParser();}
+
  };
  apply.addEventListener('click',async()=>{
-  const token=loadToken;apply.disabled=true;let previous=null,workspaceChanged=false;const sourceStore=workspaceStore;
+  const token=loadToken;apply.disabled=true;busy=true;let previous=null,workspaceChanged=false,committed=false;const sourceStore=workspaceStore;
   try{
-   requireValue(loaded&&manifest,'请先读取完整版本。');root.inert=true;const saved=await saveWorkspace('导入新版本前');if(saved?.mediaWarning)throw new Error(saved.mediaWarning);
+   requireValue(loaded&&manifest,'请先读取完整版本。');report(81,'备份原工作区');await checkpoint();const saved=await saveWorkspace('导入新版本前',null,true);await checkpoint();if(saved?.mediaWarning)throw new Error(saved.mediaWarning);
    if(token!==loadToken||!content.contains(apply)||find('#loc-overlay').hidden)return;
-   previous=captureWorkspace();workspaceChanged=true;importInProgress=true;root.inert=true;previewPlayer.reset();
+   previous=captureWorkspace();workspaceChanged=true;previewPlayer.reset();
    if(targetSpace!==null){
     const targetStore=new LocalizationWorkspaceStore();targetStore.spaceId=targetSpace;
     const targetRecord=await targetStore.load();if(targetRecord)validateWorkspace(targetRecord.snapshot);
     workspaceStore=targetStore;restoreWorkspace(targetRecord?.snapshot||null);
     validateSpaceTasks(loaded);validateManifest(manifest);
-    createPlans();
+    await createPlans(82,86);await checkpoint();
     if(targetRecord){const backup=await targetStore.save(captureWorkspace(),'跨语言导入前');if(backup.mediaWarning)throw new Error(backup.mediaWarning);}
     if(nativeApp)await invokeNative('relocate_media_import',{token:mediaImportToken,spaceId:targetSpace});
     else await importStore.mediaRequest('relocate',{token:mediaImportToken,spaceId:targetSpace});
     importStore=targetStore;
    }else{validateSpaceTasks(loaded);validateManifest(manifest);}
-   const plans=createPlans();
+   const plans=await createPlans(86,92);await checkpoint();
    const nextTasks=currentProjectId?tasks.slice():[];const selected=currentProjectId?new Set(state.selected):new Set();let active=0;
-   for(const plan of plans){if(plan.unchanged){const updates=new Map(plan.snapshotUpdates.map(entry=>[entry.key,entry.englishTranslationAtExport]));for(const entry of nextTasks[plan.index].entries)if(updates.has(entry.key))entry.englishTranslationAtExport=updates.get(entry.key);active=plan.index;continue;}const index=plan.index<0?nextTasks.length:plan.index;nextTasks[index]=plan.merged;selected.add(index);active=index;}
+   for(const [planIndex,plan] of plans.entries()){await checkpoint();report(92+2*(planIndex+1)/plans.length,'应用片段 '+(planIndex+1)+' / '+plans.length);if(plan.unchanged){const updates=new Map(plan.snapshotUpdates.map(entry=>[entry.key,entry.englishTranslationAtExport]));for(const [entryIndex,entry] of nextTasks[plan.index].entries.entries()){if(entryIndex%256===0)await checkpoint();if(updates.has(entry.key))entry.englishTranslationAtExport=updates.get(entry.key);}active=plan.index;continue;}const index=plan.index<0?nextTasks.length:plan.index;nextTasks[index]=plan.merged;selected.add(index);active=index;}
    if(!currentProjectId)editingEntries.clear();else plans.forEach(plan=>{if(!plan.unchanged&&plan.previous)plan.previous.entries.forEach(entry=>editingEntries.delete(entry));});
    tasks.splice(0,tasks.length,...nextTasks);currentProjectId=manifest.projectId;currentManifest=structuredClone(manifest);currentPackageId=manifest.packageId;fileVersion={...manifest.fileVersion};
    for(const partName of new Set(loaded.map(task=>task.partName))){delete previews[partName];if(Object.hasOwn(incomingPreviews,partName))previews[partName]=incomingPreviews[partName];}
    state.active=active;state.selected=selected;state.filter='all';state.search='';state.cursor=-1;find('#loc-filter').value='all';find('#loc-search').value='';
    find('#loc-data-origin').textContent='已导入压缩包 · '+new Set(loaded.map(task=>task.partName)).size+' 个片段';
-   changeSaved();const record=await saveWorkspace('导入新版本后',mediaImportToken);mediaImportToken=null;importInProgress=false;if(workspaceStore.spaceId)knownSpaces.add(workspaceStore.spaceId);else originalSpaceLanguage=loaded[0].language;rememberSpaces();renderAll();closeDialog();find('#loc-sentences').scrollTop=0;setNotice(record.mediaWarning||'版本导入完成并已自动保存；同片段旧视频已清理。译文可通过备份恢复，旧视频不会恢复。');
-  }catch(error){if(workspaceChanged){workspaceStore=sourceStore;restoreWorkspace(previous);discard(mediaImportToken);mediaImportToken=null;loaded=null;}preview.replaceChildren(element('p','helper pending',error.message+'；请关闭后重新导入。'));apply.disabled=!loaded;}
-  finally{importInProgress=false;root.inert=false;}
+   await checkpoint();committing=true;cancel.disabled=true;find('#loc-close').disabled=true;progress.removeAttribute('value');progressText.textContent='正在原子保存，请稍候；此阶段不能取消。';await new Promise(resolve=>setTimeout(resolve,0));
+   changeSaved();const record=await saveWorkspace('导入新版本后',mediaImportToken);committed=true;mediaImportToken=null;progress.value=100;progressText.textContent='导入完成 · 100%';unlock();if(workspaceStore.spaceId)knownSpaces.add(workspaceStore.spaceId);else originalSpaceLanguage=loaded[0].language;rememberSpaces();renderAll();closeDialog();find('#loc-sentences').scrollTop=0;setNotice(record.mediaWarning||'版本导入完成并已自动保存；同片段旧视频已清理。译文可通过备份恢复，旧视频不会恢复。');
+  }catch(error){
+   if(committed){unlock();closeDialog();setNotice('数据已导入并保存，界面刷新失败，请重新打开应用：'+error.message);return;}
+   if(workspaceChanged){workspaceStore=sourceStore;restoreWorkspace(previous);loaded=null;}
+   if(cancelled){try{await finishCancelled();}catch(cleanupError){cancelled=false;preview.replaceChildren(element('p','helper pending',cleanupError.message));}}
+   else{preview.replaceChildren(element('p','helper pending',error.message+'；请关闭后重新导入。'));progress.value=94;progressText.textContent='导入失败，原工作区已恢复';apply.disabled=!loaded;}
+  }finally{busy=false;committing=false;cancel.disabled=false;find('#loc-close').disabled=false;}
+
  });
  loadArchive(initialFile);
 }

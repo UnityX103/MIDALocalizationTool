@@ -143,7 +143,7 @@ class MediaStore:
             result[part_name] = row['revision'] if row else 0
         return result
 
-    def import_stream(self, source, length):
+    def import_stream(self, source, length, progress=lambda fraction, phase: None):
         if type(length) is not int or not 0 < length <= MAX_ZIP_BYTES:
             raise MediaError('上传长度为空或超过 2 GiB', 413)
         token = uuid4().hex
@@ -156,13 +156,14 @@ class MediaStore:
             remaining = length
             with upload.open('xb') as output:
                 while remaining:
+                    progress(0.2 * (length - remaining) / length, '上传压缩包')
                     chunk = source.read(min(CHUNK_BYTES, remaining))
                     if not chunk:
                         raise MediaError('上传文件内容不完整')
                     output.write(chunk)
                     remaining -= len(chunk)
             with upload.open('rb') as archive:
-                result = read_package(archive, directory)
+                result = read_package(archive, directory, lambda fraction, phase: progress(0.2 + 0.8 * fraction, phase))
             upload.unlink()
             project_id = result['manifest']['projectId']
             parts = [asset['partName'] for asset in result['manifest']['assets'] if asset['type'] == 'localization-dialogues']
@@ -180,6 +181,7 @@ class MediaStore:
                         os.fsync(stored.fileno())
             sync_directory(directory)
             sync_directory(self.staging)
+            progress(1, '校验完成')
             with self.locked() as database:
                 baseline = self.revisions(database, project_id, parts)
                 database.execute('INSERT INTO imports VALUES (?, ?, ?, ?, ?, ?, ?)',

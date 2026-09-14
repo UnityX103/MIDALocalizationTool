@@ -9,13 +9,25 @@ use zip::{CompressionMethod, ZipArchive, ZipWriter};
 
 const MAX_BYTES: u64 = 128 * 1024 * 1024;
 const MAX_FILE_BYTES: u64 = 64 * 1024 * 1024;
-const MAX_PARTS: usize = 100;
+const MAX_PARTS: usize = 200;
 const MAX_TASKS: usize = 1000;
 const MAX_ENTRIES: usize = 100_000;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const IDENTITY_FIELDS: [&str; 4] = ["projectId", "packageId", "fileVersion", "exportedAt"];
 
-pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport) -> Result<Value, String> {
+struct ProgressReader<'a, R, F> { inner: &'a mut R, progress: &'a mut F }
+impl<R: Read, F: FnMut(usize) -> io::Result<()>> Read for ProgressReader<'_, R, F> {
+    fn read(&mut self, buffer: &mut [u8]) -> io::Result<usize> {
+        (self.progress)(0)?;
+        let limit = buffer.len().min(64 * 1024);
+        let count = self.inner.read(&mut buffer[..limit])?;
+        (self.progress)(count)?;
+        Ok(count)
+    }
+}
+
+pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport, progress: &mut impl FnMut(f64, &str) -> Result<(), String>) -> Result<Value, String> {
+    progress(0.0, "检查 ZIP 目录")?;
     crate::media::safe_path(path)?;
     let mut file = File::open(path).map_err(|error| format!("无法打开 ZIP：{error}"))?;
     let metadata = file.metadata().map_err(|error| error.to_string())?;
@@ -66,19 +78,26 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport) -> Resu
             .min(crate::media::MAX_ZIP_BYTES.saturating_sub(total));
         let declared_size = entry.size();
         if declared_size > limit { return Err("ZIP 单文件或解压总大小超过上限".into()); }
+        let mut read_bytes = 0u64;
+        let mut on_read = |count: usize| {
+            read_bytes += count as u64;
+            progress(0.65 * (index as f64 + (read_bytes as f64 / declared_size.max(1) as f64).min(1.0)) / records.len() as f64, "解压并校验文件")
+                .map_err(io::Error::other)
+        };
+        let mut reader = ProgressReader { inner: &mut entry, progress: &mut on_read };
         if video {
             let identifier = uuid::Uuid::new_v4().to_string();
             let directory = stage.directory.join(&identifier);
             crate::media::ensure_directory(&directory)?;
             let path = directory.join("video.mp4");
             let mut output = File::create(&path).map_err(|error| error.to_string())?;
-            let (hash, length) = crate::media::copy_verified(&mut entry, &mut output, limit)?;
+            let (hash, length) = crate::media::copy_verified(&mut reader, &mut output, limit)?;
             if length == 0 || length != declared_size { return Err("视频文件长度异常".into()); }
             output.sync_all().map_err(|error| error.to_string())?;
             videos.insert(name, (identifier, path, hash, length));
         } else {
             let mut content = Vec::new();
-            (&mut entry).take(limit + 1).read_to_end(&mut content).map_err(|error| format!("ZIP 文件读取或 CRC 校验失败：{name}：{error}"))?;
+            (&mut reader).take(limit + 1).read_to_end(&mut content).map_err(|error| format!("ZIP 文件读取或 CRC 校验失败：{name}：{error}"))?;
             if content.len() as u64 > limit || content.len() as u64 != declared_size { return Err("ZIP 文件长度异常或解压内容超限".into()); }
             text_total += declared_size;
             files.insert(name, content);
@@ -107,14 +126,15 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport) -> Resu
     let mut paths = HashSet::new();
     let mut delivery = None;
     let mut counts = TaskCounts::default();
-    for asset in assets {
+    for (asset_index, asset) in assets.iter().enumerate() {
+        progress(0.65 + 0.20 * asset_index as f64 / assets.len() as f64, "校验对话数据")?;
         if asset.get("type").and_then(Value::as_str) != Some("localization-dialogues") {
             if version == 3 && matches!(asset["type"].as_str(), Some("localization-preview-video" | "localization-preview-map")) { continue; }
             return Err("不支持的片段资产类型".into());
         }
         let part_name = nonempty_text(asset, "partName")?;
         stage.parts.push(part_name.to_owned());
-        if stage.parts.len() > MAX_PARTS { return Err("一次最多导入 100 个片段".into()); }
+        if stage.parts.len() > MAX_PARTS { return Err("一次最多导入 200 个片段".into()); }
         let asset_path = part_asset_path(part_name)?;
         if asset.get("id").and_then(Value::as_str) != Some(part_name)
             || asset.get("path").and_then(Value::as_str) != Some(asset_path.as_str())
@@ -183,7 +203,9 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport) -> Resu
         let pair = media_assets.entry(part).or_default();
         if video { pair.0 = Some(asset); } else { pair.1 = Some(asset); }
     }
-    for (part, (video_asset, map_asset)) in media_assets {
+    let media_count = media_assets.len().max(1);
+    for (media_index, (part, (video_asset, map_asset))) in media_assets.into_iter().enumerate() {
+        progress(0.85 + 0.15 * media_index as f64 / media_count as f64, "校验视频映射")?;
         let video_asset = video_asset.ok_or("媒体地图缺少配对视频")?;
         let map_asset = map_asset.ok_or("媒体视频缺少配对地图")?;
         let recording = nonempty_text(video_asset, "recordingId")?;
@@ -220,7 +242,7 @@ pub fn build_package(document: &Value, output: &mut File) -> Result<(), String> 
             group.1.push(task);
         } else {
             if groups.len() >= MAX_PARTS {
-                return Err("一次最多导出 100 个片段".into());
+                return Err("一次最多导出 200 个片段".into());
             }
             group_indices.insert(part_name, groups.len());
             groups.push((part_name, vec![task]));
@@ -295,7 +317,7 @@ pub fn selected_parts(document: &Value) -> Result<Vec<String>, String> {
         let part = nonempty_text(task, "partName")?;
         if !parts.iter().any(|name| name == part) { parts.push(part.to_owned()); }
     }
-    if parts.len() > MAX_PARTS { return Err("一次最多导出 100 个片段".into()); }
+    if parts.len() > MAX_PARTS { return Err("一次最多导出 200 个片段".into()); }
     Ok(parts)
 }
 
@@ -622,8 +644,8 @@ fn inspect_file_directory(file: &mut File) -> Result<(u64, Vec<CentralRecord>), 
         start = number(&record, 48, 8)?;
         directory_end = offset;
     } else if number(&tail, end + 8, 2)? != count { return Err("ZIP 文件计数不一致".into()); }
-    if !(1..=301).contains(&count) || start.checked_add(size) != Some(directory_end) || size > MAX_FILE_BYTES {
-        return Err("ZIP 文件数量超过 301 个或目录长度无效".into());
+    if !(1..=(MAX_PARTS * 3 + 1) as u64).contains(&count) || start.checked_add(size) != Some(directory_end) || size > MAX_FILE_BYTES {
+        return Err("ZIP 文件数量超过 601 个或目录长度无效".into());
     }
     let mut offset = start;
     let mut records = Vec::new();
