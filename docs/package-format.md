@@ -14,6 +14,20 @@ ZIP 根目录为 `manifest.json`，每个片段分别位于 `parts/<partName>.js
 
 解析实现以 `package_io.py`、`src-tauri/src/package.rs` 和前端导入校验为准。未知资产、旧单文件清单 v1、示例任务、不安全路径及清单外文件被拒绝。
 
+## 小游戏资产文本与显式空译文
+
+小游戏仍使用 v2 数据 ZIP / v1 JSON 和既有 `localization-dialogues` 资产类型，不改变章节包协议。Unity 在任务中保留 `sourceKind=unity-minigame`、`assetProtocolVersion=1`、`exportId`、模块和子表 ID/GUID；词条保留 `assetGuid`、`notes`、`allowEmpty`。这些只读扩展字段随导入、工作区持久化、版本合并及导出原样保留；客户端不据此直接修改 Unity 文件。
+
+小游戏任务列表、当前标题与导入预览显示 `moduleId / tableDisplayName`，没有显示名时使用 `tableId`；缺少有效模块/子表标签时回退 `partName`。内部身份、版本匹配、ZIP 路径与媒体索引仍使用原 `partName`，章节任务显示不变。
+
+只有任务的 `sourceKind` 严格等于 `unity-minigame`、`assetProtocolVersion` 为数字 `1`，且词条 `allowEmpty` 严格为布尔 `true` 时，空字符串或空白译文才能确认。标记缺失、类型错误、其他来源、其他协议版本和所有章节任务继续要求非空译文；不能只在章节词条加 `allowEmpty` 绕过规则。
+
+符合条件的空译文可以点击“确定”、自动保存及输出 ready 包，旧版合并时保留已确认空值，不用原有非空译文回填。空值本身不触发 pending，但已有源变化、强制复核或问题标记仍要求确认；pending 空值不自动完成。前端确认/导入归一化/完成度计算及 Python、Rust 的 ready 校验使用同一来源限定，draft/ready 均不移除原有安全检查。
+
+浏览器服务 `serve.py` 的导出前置校验与 `package_io.py` 的 ZIP 读写校验共用 `accepts_translation`；桌面 Rust 校验保持同一来源/版本/布尔条件。`import-worker.js` 只解析 JSON 并校验哈希，无须增加空译文逻辑。
+
+Unity 回收仍以原资产规则、导出快照、完整 key 集合、模板参数与源/目标指纹为准；客户端允许确认空值不代表拥有写入授权，原文含参数时可能仍被 Unity 拒绝。旧桌面版本不能确认空译文，需要使用包含此兼容改动的客户端。
+
 ## 版本合并
 
 ### 词条来源快照（只读）

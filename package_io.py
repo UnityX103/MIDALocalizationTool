@@ -71,6 +71,23 @@ def valid_hash(value):
     return isinstance(value, str) and re.fullmatch('[0-9a-f]{64}', value) is not None
 
 
+def allows_empty_translation(task, entry):
+    return (task.get('sourceKind') == 'unity-minigame'
+            and type(task.get('assetProtocolVersion')) is int and task['assetProtocolVersion'] == 1
+            and entry.get('allowEmpty') is True)
+
+
+def accepts_translation(task, entry, text):
+    return (isinstance(text, str)
+            and (bool(text.strip()) or allows_empty_translation(task, entry)))
+
+
+def validate_ready_entry(task, entry):
+    if (not isinstance(entry.get('review'), dict) or entry['review'].get('state') != 'confirmed'
+            or not accepts_translation(task, entry, entry.get('translation'))):
+        raise ValueError('仍有未完成或空译文：' + str(entry.get('key')))
+
+
 def validate_source_snapshots(entry):
     for field in ('currentSource', 'localizationSourceAtExport', 'translationAtExport'):
         if not isinstance(entry.get(field), str):
@@ -342,6 +359,8 @@ def read_package(source, media_directory, progress=lambda fraction, phase: None)
                         raise ValueError('词条标识无效或重复')
                     keys.add(entry['key'])
                     validate_source_snapshots(entry)
+                    if data['deliveryState'] == 'ready':
+                        validate_ready_entry(task, entry)
                 entry_count += len(entries)
             if task_count > 1000 or entry_count > 100000:
                 raise ValueError('任务或词条总数超过上限')
@@ -370,6 +389,8 @@ def write_package(output, document):
     for task in document['tasks']:
         for entry in task['entries']:
             validate_source_snapshots(entry)
+            if document.get('deliveryState') == 'ready':
+                validate_ready_entry(task, entry)
         groups.setdefault(task['partName'], []).append(task)
     if not 0 < len(groups) <= MAX_PARTS:
         raise ValueError('一次最多导出 200 个片段')

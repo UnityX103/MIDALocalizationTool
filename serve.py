@@ -15,7 +15,7 @@ from uuid import uuid4
 
 from media_store import MediaError, MediaStore
 from import_jobs import ImportJobs
-from package_io import CHUNK_BYTES, MAX_EXPORT_BYTES, MAX_ZIP_BYTES, parse_json, write_package
+from package_io import CHUNK_BYTES, MAX_EXPORT_BYTES, MAX_ZIP_BYTES, accepts_translation, parse_json, write_package
 
 ROOT = Path(__file__).resolve().parent
 MAX_RANGE_BYTES = 8 * 1024 * 1024
@@ -65,7 +65,7 @@ def validate_delivery(document, allow_unresolved=False):
             translation = entry.get('translation')
             if not isinstance(review, dict) or review.get('state') not in ('pending', 'confirmed') or not isinstance(translation, str):
                 raise ValueError('词条复核状态或译文格式无效')
-            if document['deliveryState'] == 'ready' and (review['state'] != 'confirmed' or not translation.strip()):
+            if document['deliveryState'] == 'ready' and (review['state'] != 'confirmed' or not accepts_translation(task, entry, translation)):
                 raise ValueError('仍有未完成或空译文')
 
 

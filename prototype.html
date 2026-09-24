@@ -137,6 +137,12 @@ const invokeNative=(command,args)=>nativeApp.core.invoke(command,args).catch(err
 const find=selector=>root.querySelector(selector);
 const tasks=[];
 function getPackageName(key){const separator=key.lastIndexOf('_');return separator>0?key.slice(0,separator):key;}
+function taskDisplayName(task){
+ if(task.sourceKind!=='unity-minigame'||task.assetProtocolVersion!==1)return task.partName;
+ const module=typeof task.moduleId==='string'?task.moduleId.trim():'';
+ const table=typeof task.tableDisplayName==='string'&&task.tableDisplayName.trim()?task.tableDisplayName.trim():typeof task.tableId==='string'?task.tableId.trim():'';
+ return module&&table?module+' / '+table:task.partName;
+}
 let currentProjectId=null;
 let currentManifest=null;
 let fileVersion=null;
@@ -467,7 +473,7 @@ function updateSummary(){
   find('#loc-import-language').textContent='尚未导入本地化数据';
   find('#loc-task-version').textContent='';find('#loc-snapshot').textContent='';find('#loc-progress-text').textContent='尚无翻译任务';find('#loc-progress-bar').style.width='0%';find('#loc-next').disabled=true;return;
  }
- const remaining=pending(task);find('#loc-title').textContent=task.partName;find('#loc-count').textContent=`${new Set(task.entries.map(entry=>getPackageName(entry.key))).size} 个对话包；有效对话 ${task.entries.length} 条，需处理 ${remaining} 条。`;
+ const remaining=pending(task);find('#loc-title').textContent=taskDisplayName(task);find('#loc-count').textContent=`${new Set(task.entries.map(entry=>getPackageName(entry.key))).size} 个对话包；有效对话 ${task.entries.length} 条，需处理 ${remaining} 条。`;
  find('#loc-import-language').textContent='当前导入：'+[...new Set(tasks.map(item=>item.language))].map(languageLabel).join(' / ')+' · 文件 v'+fileVersion.revision;
  find('#loc-task-version').textContent='任务 v'+task.taskVersion;
  find('#loc-snapshot').textContent='导出时：'+({latest:'最新',outdated:'落后',unsupported:'未支持本地化'}[task.versionStatusAtExport]||'落后');
@@ -482,9 +488,9 @@ function renderTasks(){
  const visibleTasks=tasks.map((task,index)=>({task,index})).filter(({task})=>state.taskFilter!=='pending'||pending(task)>0).sort((left,right)=>partNameOrder.compare(left.task.partName,right.task.partName)||left.index-right.index);
  if(tasks.length&&!visibleTasks.length){const empty=element('div','helper','没有未修复的片段，所有片段均已确认。');empty.setAttribute('role','status');list.append(empty);}
  visibleTasks.forEach(({task,index})=>{
-  const row=element('div','taskrow'+(index===state.active?' active':''));const check=element('input');check.type='checkbox';check.checked=state.selected.has(index);check.setAttribute('aria-label','交付 '+task.partName+' / '+task.language);
+  const row=element('div','taskrow'+(index===state.active?' active':''));const check=element('input');check.type='checkbox';check.checked=state.selected.has(index);check.setAttribute('aria-label','交付 '+taskDisplayName(task)+' / '+task.language);
   check.addEventListener('change',()=>{if(check.checked)state.selected.add(index);else state.selected.delete(index);updateSummary();changeSaved();});
-  const button=element('button');button.setAttribute('aria-pressed',String(index===state.active));button.append(element('div','taskname',task.partName));const meta=element('div','taskmeta');meta.append(element('span','',task.language+' · v'+task.taskVersion+' · '+task.entries.length+' 条'),element('span',pending(task)?'pending':'confirmed',pending(task)?pending(task)+' 待处理':'全部已确认'));button.append(meta);
+  const button=element('button');button.setAttribute('aria-pressed',String(index===state.active));button.append(element('div','taskname',taskDisplayName(task)));const meta=element('div','taskmeta');meta.append(element('span','',task.language+' · v'+task.taskVersion+' · '+task.entries.length+' 条'),element('span',pending(task)?'pending':'confirmed',pending(task)?pending(task)+' 待处理':'全部已确认'));button.append(meta);
   button.addEventListener('click',()=>{state.active=index;state.cursor=-1;setNotice('');renderAll();changeSaved();find('#loc-sentences').scrollTop=0;});row.append(check,button);list.append(row);
  });
 }
@@ -522,18 +528,18 @@ function renderEntries(){
    translationContent.replaceChildren();const draft=editingEntries.get(entry);const isPending=entry.review.state!=='confirmed';
    tag.className='tag '+(draft?'muted':isPending?'pending':'confirmed');tag.textContent=draft?'编辑中':isPending?'● 待处理':'✓ 已完成';
    issue.textContent=isPending?(entry.review.reason||entry.issuesAtExport.map(value=>issueNames[value]).join(' · ')||'需要编辑处理'):'';
-   edit.textContent=draft?'确定':'编辑';edit.className=draft?'primary':'';edit.disabled=Boolean(historyView)||Boolean(draft&&!draft.text.trim());edit.hidden=Boolean(historyView);
+   edit.textContent=draft?'确定':'编辑';edit.className=draft?'primary':'';edit.disabled=Boolean(historyView)||Boolean(draft&&!LocalizationWorkspaceStore.acceptsTranslation(task,entry,draft.text));edit.hidden=Boolean(historyView);
    if(historyView){translationContent.append(element('p','translation-preview',draft?draft.text:entry.translation));}
    else if(draft){
     const input=element('textarea');input.id='loc-text-'+index;input.setAttribute('aria-label',entry.key+' 译文');input.value=draft.text;input.placeholder='填写译文…';input.spellcheck=true;
     input.addEventListener('focus',()=>{state.cursor=index;touchEditingEntry(entry);});
-    input.addEventListener('input',()=>{draft.text=input.value;touchEditingEntry(entry);edit.disabled=!draft.text.trim();changeSaved();});translationContent.append(input);
-   }else translationContent.append(element('p','translation-preview'+(entry.translation.trim()?'':' muted'),entry.translation.trim()?entry.translation:'（未填写）'));
+    input.addEventListener('input',()=>{draft.text=input.value;touchEditingEntry(entry);edit.disabled=!LocalizationWorkspaceStore.acceptsTranslation(task,entry,draft.text);changeSaved();});translationContent.append(input);
+   }else translationContent.append(element('p','translation-preview'+(entry.translation.trim()?'':' muted'),entry.translation.trim()?entry.translation:LocalizationWorkspaceStore.allowsEmptyTranslation(task,entry)&&entry.review.state==='confirmed'?'（已确认留空）':'（未填写）'));
   };
   edit.addEventListener('click',()=>{
    if(historyView||historyBusy)return;
    state.cursor=index;const draft=editingEntries.get(entry);
-   if(draft){if(!draft.text.trim())return;entry.translation=draft.text;entry.review.state='confirmed';editingEntries.delete(entry);changeSaved();setNotice('');}
+   if(draft){if(!LocalizationWorkspaceStore.acceptsTranslation(task,entry,draft.text))return;entry.translation=draft.text;entry.review.state='confirmed';editingEntries.delete(entry);changeSaved();setNotice('');}
    else {editingEntries.set(entry,{text:entry.translation});changeSaved();}
    if(draft)renderEntries();else renderTarget();
    updateSummary();renderTasks();
@@ -612,10 +618,11 @@ async function planMerge(incoming,checkpoint){
   const sameSource=old.currentSource===entry.currentSource&&old.speakerKey===entry.speakerKey;
   const targetChanged=old.translationAtExport!==entry.translationAtExport;
   if(draft)stats.unfinished++;
-  if(!sameSource){stats.changed++;entry.translation=draft?existingText:(existingText||entry.translation);entry.review={state:'pending',reason:old.currentSource!==entry.currentSource?'新版原文已变化，已保留旧译文供修改':'新版发言人已变化，请检查译文'};continue;}
-  if(targetChanged&&existingText!==entry.translationAtExport){stats.conflicts++;entry.translation=draft?existingText:(existingText||entry.translation);entry.review={state:'pending',reason:'新版也更新了译文，已保留本地内容，请编辑后确定'};continue;}
+  const preserveEmpty=old.review.state==='confirmed'&&LocalizationWorkspaceStore.allowsEmptyTranslation(previous,old);
+  if(!sameSource){stats.changed++;entry.translation=draft||preserveEmpty?existingText:(existingText||entry.translation);entry.review={state:'pending',reason:old.currentSource!==entry.currentSource?'新版原文已变化，已保留旧译文供修改':'新版发言人已变化，请检查译文'};continue;}
+  if(targetChanged&&existingText!==entry.translationAtExport){stats.conflicts++;entry.translation=draft||preserveEmpty?existingText:(existingText||entry.translation);entry.review={state:'pending',reason:'新版也更新了译文，已保留本地内容，请编辑后确定'};continue;}
   if(!draft&&isLegacyTaskWideReview(old,entry)){stats.reused++;continue;}
-  if(existingText.trim()){stats.reused++;entry.translation=existingText;entry.review={state:draft?'pending':old.review.state,reason:draft?'保留了尚未确定的编辑内容':old.review.reason};if(old.review.state==='pending'&&!draft)entry.review.reason=old.review.reason||old.issuesAtExport.map(issue=>issueNames[issue]).join(' · ');}
+  if(LocalizationWorkspaceStore.acceptsTranslation(incoming.task,entry,existingText)){stats.reused++;entry.translation=existingText;entry.review={state:draft?'pending':old.review.state,reason:draft?'保留了尚未确定的编辑内容':old.review.reason};if(old.review.state==='pending'&&!draft)entry.review.reason=old.review.reason||old.issuesAtExport.map(issue=>issueNames[issue]).join(' · ');}
   else {if(draft)entry.translation=existingText;entry.review={state:'pending',reason:'译文仍未完成，请编辑后确定'};}
  }
  return {index,previous,merged,stats,unchanged:false};
@@ -685,7 +692,7 @@ async function validateDialogueData(data,manifest,taskKeys,asset,checkpoint){
    requireValue(Number.isSafeInteger(entry.order)&&entry.order>=0&&entry.dialoguePackage===getPackageName(entry.key),'词条顺序或对话包标识无效。');
    requireValue(Array.isArray(entry.issuesAtExport)&&entry.issuesAtExport.every(issue=>typeof issue==='string')&&entry.review&&['pending','confirmed'].includes(entry.review.state),'词条复核状态无效。');
    requireValue(entry.review.reason===undefined||typeof entry.review.reason==='string','词条原因必须是文本。');
-   if(!entry.translation.trim()||task.reviewAllRequired||entry.issuesAtExport.length)entry.review={state:'pending',reason:entry.review.reason||'需要编辑后确定'};
+   if(!LocalizationWorkspaceStore.acceptsTranslation(task,entry)||task.reviewAllRequired||entry.issuesAtExport.length)entry.review={state:'pending',reason:entry.review.reason||'需要编辑后确定'};
   }
   requireValue(task.targetLocalizationHashAtExport!==null||(task.versionStatusAtExport==='unsupported'&&task.reviewAllRequired&&task.entries.every(entry=>entry.issuesAtExport.includes('missing_localization_file')||entry.issuesAtExport.includes('missing_language_column'))),'译文哈希缺失但没有对应的目标文件或语言列缺失标记。');
  }
@@ -744,7 +751,7 @@ function showVersionImport(initialFile){
   const plans=await createPlans();preview.replaceChildren();
   for(let index=0;index<plans.length;index++){
    const plan=plans[index],task=loaded[index];const text=plan.unchanged?'版本相同，保留已有编辑'+(plan.snapshotUpdates.length?' · 补充 '+plan.snapshotUpdates.length+' 条旧英文快照':''):`复用 ${plan.stats.reused} · 变化 ${plan.stats.changed} · 新增 ${plan.stats.added} · 移出 ${plan.stats.removed} · 冲突 ${plan.stats.conflicts}`;
-   preview.append(element('p','helper',task.partName+' / '+languageLabel(task.language)+'：'+text));
+   preview.append(element('p','helper',taskDisplayName(task)+' / '+languageLabel(task.language)+'：'+text));
   }
   preview.append(element('p','helper','全部文件校验通过。'+(tasks.length?'导入前备份译文。':'当前为空白，跳过导入前备份，导入成功后建立首份备份。')+'导入成功后删除同片段所有旧视频；新包未附视频时也会清理该片段的旧视频。其他片段不受影响，旧备份不能恢复已清理的视频。'));
   apply.disabled=false;
@@ -886,7 +893,7 @@ async function attemptExport(allowUnresolved=false){
  if(exporting||historyView||historyBusy||importInProgress||switchingSpace||clearingCache||appUpdateInstalling||updateDialogActive)return;
  if(!state.selected.size){setNotice('请先勾选要导出的任务。');return;}
  if(jumpToLatestDraft())return;
- const unresolved=[...state.selected].reduce((count,index)=>count+tasks[index].entries.filter(entry=>entry.review.state!=='confirmed'||!entry.translation.trim()).length,0);
+ const unresolved=[...state.selected].reduce((count,index)=>count+tasks[index].entries.filter(entry=>entry.review.state!=='confirmed'||!LocalizationWorkspaceStore.acceptsTranslation(tasks[index],entry)).length,0);
  if(unresolved&&!allowUnresolved){
   const content=openDialog('仍有待处理问题，是否继续导出？');
   content.append(element('p','helper',`所选任务还有 ${unresolved} 句待处理或译文为空。选择“是”将忽略这些问题并导出当前内容，保留原有待处理状态。`));

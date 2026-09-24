@@ -521,17 +521,23 @@ fn validate_tasks(
                 .ok_or("词条译文不是文本")?;
             if ready
                 && (state != Some("confirmed")
-                    || translation
+                    || (!allows_empty_translation(task, entry) && translation
                         .trim_matches(|character: char| {
                             character.is_whitespace() || character == '\u{feff}'
                         })
-                        .is_empty())
+                        .is_empty()))
             {
                 return Err(format!("仍有未完成或空译文：{part} / {key}"));
             }
         }
     }
     Ok(())
+}
+
+fn allows_empty_translation(task: &Value, entry: &Value) -> bool {
+    task.get("sourceKind").and_then(Value::as_str) == Some("unity-minigame")
+        && task.get("assetProtocolVersion").and_then(Value::as_u64) == Some(1)
+        && entry.get("allowEmpty").and_then(Value::as_bool) == Some(true)
 }
 
 fn safe_filename(name: &str) -> bool {

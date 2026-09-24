@@ -5,6 +5,12 @@ function localizationUuid(){
  return hex.slice(0,8)+'-'+hex.slice(8,12)+'-'+hex.slice(12,16)+'-'+hex.slice(16,20)+'-'+hex.slice(20);
 }
 class LocalizationWorkspaceStore {
+ static allowsEmptyTranslation(task,entry){
+  return task?.sourceKind==='unity-minigame'&&task.assetProtocolVersion===1&&entry?.allowEmpty===true;
+ }
+ static acceptsTranslation(task,entry,text=entry.translation){
+  return typeof text==='string'&&(text.trim().length>0||this.allowsEmptyTranslation(task,entry));
+ }
  static readEnglishSnapshot(entry,language){
   if(Object.hasOwn(entry,'englishTranslationAtExport')){
    if(typeof entry.englishTranslationAtExport!=='string')throw new Error('旧英文快照 englishTranslationAtExport 必须是文本');
