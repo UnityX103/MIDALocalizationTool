@@ -87,6 +87,14 @@ body{padding:12px}
 #mida-loc-app #loc-unsaved{color:var(--loc-red);font-size:20px;line-height:1}
 #mida-loc-app #loc-save{background:#45484c;color:#dedfe1;border-color:#62676d}
 #mida-loc-app #loc-save.unsaved{background:#a9363f;color:#fff;border-color:#d75660}
+#mida-loc-app .statusbar{align-items:center;flex-wrap:wrap}
+#mida-loc-app .workload-status{display:flex;align-items:center;gap:5px 8px;flex-wrap:wrap;min-width:0;font-variant-numeric:tabular-nums}
+#mida-loc-app .workload-status>span{cursor:help;line-height:1.7;outline-offset:3px}
+#mida-loc-app #loc-work-cumulative{margin-left:8px}
+#mida-loc-app .workload-help{border-radius:50%;padding:0;width:22px;height:22px;flex:0 0 22px;font-weight:700;line-height:20px}
+#mida-loc-app .workload-fields{margin:14px 0}
+#mida-loc-app .workload-fields dt{font-family:ui-monospace,monospace;overflow-wrap:anywhere;font-size:12px;margin-top:12px}
+#mida-loc-app .workload-fields dd{margin:4px 0;font-size:13px;line-height:1.7}
 </style>
 </head>
 <body>
@@ -121,12 +129,13 @@ body{padding:12px}
     <div class="preview-body" hidden><video controls preload="metadata" playsinline aria-label="当前片段预览视频" hidden></video><p data-preview-message class="preview-message" role="status" hidden></p></div>
   </section>
   </div>
-  <footer class="statusbar"><span id="loc-data-origin">尚未导入本地化数据</span><span id="loc-save-state" hidden>正在恢复自动保存…</span><button id="loc-app-update" hidden>检查更新</button></footer>
+  <footer class="statusbar"><div class="workload-status" id="loc-data-origin"><span id="loc-work-progress" tabindex="0" title="翻译进度：当前语言空间中，当前中文原文已确认且没有编辑中草稿的汉字数。已有译文可计入进度，不代表本译者新增劳动。">翻译进度：0 字</span><span id="loc-work-total" tabindex="0" title="总进度：当前语言空间全部任务的中文原文汉字数。标点、数字和英文不计。">/ 0 字</span><span id="loc-work-cumulative" tabindex="0" title="累计翻译：台账中已保存的有效翻译工作汉字数，包括被新版替换或删除的旧文；重复确认、复核与同原文润色不重复计数。功能启用前的历史劳动不推算。">累计翻译：0 字</span><button class="workload-help" id="loc-work-help" aria-label="查看翻译工作量对账字段" title="查看 ZIP 对账文件与字段">?</button></div><span id="loc-save-state" hidden>正在恢复自动保存…</span><button id="loc-app-update" hidden>检查更新</button></footer>
   <div class="overlay" id="loc-overlay" hidden>
     <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="loc-dialog-title"><div class="dialoghead"><h3 id="loc-dialog-title"></h3><button id="loc-close" aria-label="关闭弹窗">关闭</button></div><div id="loc-dialog-content"></div></section>
   </div>
 </div>
 <script src="workspace-store.js"></script>
+<script src="workload.js"></script>
 <script src="preview-player.js"></script>
 <script>
 (()=>{
@@ -150,6 +159,7 @@ let currentManifest=null;
 let fileVersion=null;
 let currentPackageId=null;
 let exportSequence=0;
+let workLedger=LocalizationWorkload.create(),savedWorkIds=new Set();
 const issueNames={source_changed:'原文已变化',missing_translation:'缺少译文',missing_entry:'缺少本地化条目',baseline_missing:'缺少确认基线，需复核'};
 const initialState=()=>({active:-1,selected:new Set(),filter:'all',taskFilter:'all',search:'',layout:'上下排列',autoNext:false,previewPlacement:'right',previewWidth:38,previewHeight:42,menu:true,modified:false,cursor:-1});
 const partNameOrder=new Intl.Collator('en',{numeric:true,sensitivity:'base'});
@@ -295,13 +305,14 @@ previewDivider.addEventListener('keydown',event=>{
 });
 function captureWorkspace(){
  if(!tasks.length)return null;
- const drafts=[];tasks.forEach((task,taskIndex)=>task.entries.forEach(entry=>{const draft=editingEntries.get(entry);if(draft)drafts.push({taskIndex,key:entry.key,text:draft.text});}));
- return structuredClone({format:'mida-localization-workspace',version:1,tasks,drafts,currentProjectId,currentManifest,currentPackageId,fileVersion,exportSequence,previews,previewPlayer:previewPlayer.snapshot(),state:{...state,selected:[...state.selected]}});
+ const drafts=[];tasks.forEach((task,taskIndex)=>task.entries.forEach(entry=>{const draft=editingEntries.get(entry);if(draft)drafts.push({taskIndex,key:entry.key,...draft});}));
+ return structuredClone({format:'mida-localization-workspace',version:1,tasks,drafts,currentProjectId,currentManifest,currentPackageId,fileVersion,exportSequence,workLedger,previews,previewPlayer:previewPlayer.snapshot(),state:{...state,selected:[...state.selected]}});
 }
 function validateWorkspace(snapshot){
  requireValue(snapshot?.format==='mida-localization-workspace'&&snapshot.version===1,'不支持的自动保存格式，未覆盖当前内容。');
  requireValue(!LocalizationWorkspaceStore.isLegacyDemo(snapshot),'旧示例存档不再恢复，请导入 Unity 导出的 ZIP。原持久化记录保留。');
  requireValue(Array.isArray(snapshot.tasks)&&snapshot.tasks.length>0&&snapshot.tasks.length<=1000&&validVersion(snapshot.fileVersion),'自动保存任务或版本无效。');
+ if(snapshot.workLedger)LocalizationWorkload.validateLedger(snapshot.workLedger);
  const identities=new Set();let count=0;
  for(const task of snapshot.tasks){
   requireValue(task&&typeof task.partName==='string'&&typeof task.language==='string'&&Array.isArray(task.entries)&&task.entries.length,'自动保存任务结构无效。');
@@ -317,6 +328,7 @@ function validateWorkspace(snapshot){
  }
  requireValue(Array.isArray(snapshot.drafts),'自动保存编辑草稿无效。');
  for(const draft of snapshot.drafts)requireValue(Number.isInteger(draft.taskIndex)&&snapshot.tasks[draft.taskIndex]?.entries.some(entry=>entry.key===draft.key)&&typeof draft.text==='string','自动保存的编辑草稿不属于任务。');
+ for(const draft of snapshot.drafts)requireValue(!draft.before||(typeof draft.before.translation==='string'&&['pending','confirmed'].includes(draft.before.state)),'自动保存的草稿来源无效。');
  requireValue(snapshot.state&&Array.isArray(snapshot.state.selected)&&snapshot.state.selected.every(index=>Number.isInteger(index)&&index>=0&&index<snapshot.tasks.length),'自动保存选择范围无效。');
  requireValue(Number.isInteger(snapshot.state.active)&&snapshot.state.active>=0&&snapshot.state.active<snapshot.tasks.length&&['all','pending','confirmed'].includes(snapshot.state.filter)&&typeof snapshot.state.search==='string'&&['双栏对照','上下排列'].includes(snapshot.state.layout),'自动保存界面状态无效。');
  requireValue(snapshot.state.previewPlacement===undefined||['right','bottom'].includes(snapshot.state.previewPlacement),'自动保存视频位置无效。');
@@ -330,20 +342,21 @@ function restoreWorkspace(snapshot){
  pendingTaskSaves.clear();
 
  if(!snapshot){
-  tasks.splice(0);editingEntries.clear();currentProjectId=null;currentManifest=null;currentPackageId=null;fileVersion=null;exportSequence=0;
+  tasks.splice(0);editingEntries.clear();currentProjectId=null;currentManifest=null;currentPackageId=null;fileVersion=null;exportSequence=0;workLedger=LocalizationWorkload.create();savedWorkIds=new Set();
   Object.assign(state,initialState());previews=Object.create(null);previewPlayer.restore(null);
-  find('#loc-search').value='';find('#loc-filter').value='all';find('#loc-data-origin').textContent='尚未导入本地化数据';find('#loc-save-state').textContent='导入 ZIP 后自动保存到本机';renderAll();return;
+  find('#loc-search').value='';find('#loc-filter').value='all';find('#loc-save-state').textContent='导入 ZIP 后自动保存到本机';renderAll();return;
  }
  validateWorkspace(snapshot);const saved=structuredClone(snapshot);
  tasks.splice(0,tasks.length,...saved.tasks);editingEntries.clear();
- for(const draft of saved.drafts){const entry=tasks[draft.taskIndex].entries.find(entry=>entry.key===draft.key);editingEntries.set(entry,{text:draft.text});}
+ for(const draft of saved.drafts){const entry=tasks[draft.taskIndex].entries.find(entry=>entry.key===draft.key);editingEntries.set(entry,{text:draft.text,...(draft.before?{before:draft.before}:{})});}
  currentProjectId=saved.currentProjectId;currentManifest=saved.currentManifest;currentPackageId=saved.currentPackageId;fileVersion=saved.fileVersion;exportSequence=Math.max(saved.exportSequence||0,fileVersion.revision);
+ workLedger=saved.workLedger||LocalizationWorkload.create();LocalizationWorkload.alignSources(workLedger,tasks,currentManifest);savedWorkIds=new Set(workLedger.records.map(record=>record.id));
  Object.assign(state,initialState(),saved.state,{selected:new Set(saved.state.selected),modified:false});
  delete state.autoSaveInterval;
  delete state.collapsedPackages;delete state.expandedPackages;
  previews=Object.assign(Object.create(null),saved.previews||{});previewPlayer.restore(saved.previewPlayer);
  find('#loc-search').value=state.search;find('#loc-filter').value=state.filter;
- find('#loc-data-origin').textContent='已恢复本地工作区';renderAll();
+ renderAll();
 }
 function saveWorkspace(reason=null,mediaImportToken=null,importBackup=false){
  if(historyView||historyBusy)return Promise.reject(new Error('历史记录只读，请先返回当前最新版本'));
@@ -356,7 +369,7 @@ function saveWorkspace(reason=null,mediaImportToken=null,importBackup=false){
 
  const targetStore=workspaceStore;const operation=saveQueue.catch(()=>{}).then(()=>targetStore.save(snapshot,reason,mediaImportToken));saveQueue=operation;
  return operation.then(record=>{
-  if(targetStore===workspaceStore){for(const [task,changedAt] of pendingTaskSaves)if(changedAt<=revision)pendingTaskSaves.delete(task);if(revision===editRevision)state.modified=false;}
+  if(targetStore===workspaceStore){savedWorkIds=new Set(snapshot.workLedger.records.map(record=>record.id));renderWorkload();for(const [task,changedAt] of pendingTaskSaves)if(changedAt<=revision)pendingTaskSaves.delete(task);if(revision===editRevision)state.modified=false;}
   renderSaveState();
   if(record.mediaUpdated)previewPlayer.refresh();if(record.mediaWarning)setNotice(record.mediaWarning);return record;
  }).catch(error=>{if(targetStore===workspaceStore){state.modified=true;renderSaveState();setNotice('保存失败：'+error.message+'；请保留此页面');}throw error;});
@@ -366,20 +379,21 @@ function saveConfirmedTask(task){
  pendingTaskSaves.set(task,revision);
  const savedTask=structuredClone(task);
  const confirmedKeys=task.entries.filter(entry=>entry.review.state==='confirmed'&&!editingEntries.has(entry)).map(entry=>entry.key);
- const view=structuredClone({state:{...state,selected:[...state.selected]},exportSequence,previewPlayer:previewPlayer.snapshot()});
+ const view=structuredClone({state:{...state,selected:[...state.selected]},exportSequence,workLedger,previewPlayer:previewPlayer.snapshot()});
  const projectId=currentProjectId;
- const operation=saveQueue.catch(()=>{}).then(()=>{
+ const operation=saveQueue.then(()=>{
   if(!storageReady||clearingCache)throw new Error('本地存储不可用，当前片段尚未保存');
   return targetStore.saveTask(savedTask,taskIndex,projectId,view,confirmedKeys);
  });
  saveQueue=operation;
  return operation.then(record=>{
   if(targetStore!==workspaceStore)return;
+  savedWorkIds=new Set(view.workLedger.records.map(record=>record.id));renderWorkload();
   if(pendingTaskSaves.get(task)===revision)pendingTaskSaves.delete(task);
   if(revision===editRevision&&!editingEntries.size&&!pendingTaskSaves.size)state.modified=false;
   renderSaveState();
   if(record.saveWarning)setNotice('片段已提交，但磁盘同步未完成：'+record.saveWarning);
- }).catch(error=>{if(targetStore===workspaceStore){state.modified=true;renderSaveState();setNotice('片段保存失败：'+error.message+'；修改仍在当前窗口，请重试确定或手动保存。');}});
+ }).catch(error=>{if(targetStore===workspaceStore){state.modified=true;renderSaveState();setNotice('片段保存失败：'+error.message+'；修改仍在当前窗口，自动保存已暂停。请完成编辑后点击“保存”或重新导出，重试保存全部进度。');}});
 }
 async function showBackups(){
  if(historyBusy||importInProgress||switchingSpace||clearingCache)return;
@@ -420,7 +434,13 @@ function confirmHistoryRollback(record,backup){
    requireValue(storageReady,'本地存储不可用，暂不能回退。');await saveQueue.catch(()=>{});
    const latest=historyView?(await workspaceStore.load())?.snapshot:captureWorkspace();
    if(latest){const saved=await workspaceStore.save(latest,'回退历史前');if(saved.mediaWarning)throw new Error(saved.mediaWarning);}
-   const result=await workspaceStore.save(structuredClone(record.snapshot),'回退历史后');
+   const restored=structuredClone(record.snapshot);
+   if(latest?.workLedger){
+    restored.workLedger=structuredClone(latest.workLedger);
+    LocalizationWorkload.alignSources(restored.workLedger,restored.tasks,restored.currentManifest,record.snapshot.workLedger?.sources||[]);
+   }
+   const result=await workspaceStore.save(restored,'回退历史后');
+   saveQueue=Promise.resolve(result);
    historyView=null;editRevision++;restoreWorkspace(result.snapshot);historyBusy=false;closeDialog();setNotice(result.mediaWarning||'已回退为所选历史记录，可以继续编辑；回退前的最新内容已备份。');
   }catch(error){progress.textContent='回退失败：'+error.message+'。未切换编辑内容，请重试。';confirm.disabled=false;}
   finally{historyBusy=false;root.inert=false;updateSummary();}
@@ -457,8 +477,34 @@ function updatePackageCounts(){
 
  }
 }
+function renderWorkload(){
+ const stats=LocalizationWorkload.progress(tasks,requiresWork),format=value=>value.toLocaleString('zh-CN');
+ const cumulative=workLedger.records.reduce((total,record)=>total+(savedWorkIds.has(record.id)?record.chars:0),0);
+ find('#loc-work-progress').textContent='翻译进度：'+format(stats.progressChars)+' 字';
+ find('#loc-work-total').textContent='/ '+format(stats.totalChars)+' 字';
+ find('#loc-work-cumulative').textContent='累计翻译：'+format(cumulative)+' 字';
+}
+find('#loc-work-help').addEventListener('click',()=>{
+ if(importInProgress||switchingSpace||clearingCache||historyBusy||updateDialogActive||appUpdateInstalling)return;
+ const content=openDialog('翻译工作量与交接对账');
+ content.append(element('p','helper','界面数字仅供辅助计算。准确交接数字以导出 ZIP 根目录 manifest.json 的字段为准。界面统计当前语言空间，ZIP 统计本次勾选交付的任务，两者范围可能不同。'));
+ const fields=element('dl','workload-fields');
+ for(const [field,description] of [
+  ['workload.progressChars / workload.totalChars','当前原文已确认汉字数 / 当前原文总汉字数。'],
+  ['workload.cumulativeChars','累计有效翻译工作汉字数，包含因中文更新或删除而作废的已完成工作。'],
+  ['workload.handoverChars','本包尚未通过 Unity 回执确认交接的工作量；重复导出不会清零。'],
+  ['workload.previousDeliveryDeltaChars','相对上一交付快照新增的工作量，不等于全部待交接量。'],
+  ['workload.sinceSourceUpdateChars','各单元最近一次新任务版本导入后完成的工作量。'],
+  ['workload.scope / workload.countingRule','统计项目、谱系、语言、片段范围，以及固定汉字计数规则 han-v1。标点、数字、英文不计。'],
+  ['workload.records[]','逐笔工作明细；sourceText 是当时中文，chars 是其汉字数，id 用于去重。'],
+  ['delivery.id / delivery.revision','交付包身份和独立交付序号；相同内容重复导出复用同一快照。'],
+  ['workReceipts[].deliveryId / workReceipts[].recordIds','位于 Unity 下一次任务 ZIP 的 manifest.json 中，标明实际接收的交付与工作记录；导入后自动确认，无需另行操作。']
+ ])fields.append(element('dt','',field),element('dd','',description));
+ content.append(fields,element('p','helper','功能启用前的历史劳动不推算。原包已有译文、未改译文的复核和同原文润色不新增累计字数。交接确认不是付款记录；离线台账不证明真实操作者。'));
+});
 function updateSummary(){
  renderSaveState();
+ renderWorkload();
  find('#loc-history-view').hidden=!historyView;
  if(historyView)find('#loc-history-label').textContent='历史记录 · '+new Date(historyView.backup.savedAt).toLocaleString()+' · 只读';
  if(!workspaceStore.spaceId&&tasks.length)originalSpaceLanguage=tasks[0].language;
@@ -516,7 +562,13 @@ function renderEntries(){
   if(!requiresWork(entry)){
    card.classList.add('compact-entry');card.tabIndex=-1;
    const source=(entry.speakerChineseName?entry.speakerChineseName+'：':'')+entry.currentSource;
-   card.append(element('p','',entry.translation.trim()?source+'\n'+entry.translation:source));
+   const row=element('div','translation-row'),text=element('p','translation-content',entry.translation.trim()?source+'\n'+entry.translation:source);
+   const edit=element('button','','编辑');edit.id='loc-edit-'+index;edit.disabled=Boolean(historyView||historyBusy);
+   edit.addEventListener('click',()=>{
+    if(historyView||historyBusy)return;
+    state.cursor=index;editingEntries.set(entry,{text:entry.translation});changeSaved();renderEntries();updateSummary();renderTasks();
+   });
+   row.append(text,edit);card.append(row);
    packageViews.get(packageName).body.append(card);return;
   }
   const header=element('header','entryhead');const tag=element('span','tag');
@@ -542,7 +594,12 @@ function renderEntries(){
   edit.addEventListener('click',()=>{
    if(historyView||historyBusy)return;
    state.cursor=index;const draft=editingEntries.get(entry);
-   if(draft){if(!LocalizationWorkspaceStore.acceptsTranslation(task,entry,draft.text))return;entry.translation=draft.text;entry.review.state='confirmed';editingEntries.delete(entry);changeSaved();setNotice('');}
+   if(draft){
+    if(!LocalizationWorkspaceStore.acceptsTranslation(task,entry,draft.text))return;
+    try{LocalizationWorkload.confirmed(workLedger,task,{...entry,translation:draft.text},draft.before||{translation:entry.translation,state:entry.review.state},currentManifest);}
+    catch(error){setNotice(error.message);return;}
+    entry.translation=draft.text;entry.review.state='confirmed';editingEntries.delete(entry);changeSaved();setNotice('');
+   }
    else {editingEntries.set(entry,{text:entry.translation});changeSaved();}
    if(draft)renderEntries();else renderTarget();
    updateSummary();renderTasks();
@@ -571,7 +628,14 @@ function moveToNextPending(openEditor=false){
 function renderAll(){root.classList.toggle('stacked',state.layout==='上下排列');find('#loc-taskpane').classList.toggle('collapsed',!state.menu);find('#loc-collapse').setAttribute('aria-label',state.menu?'收起任务菜单':'展开任务菜单');renderTasks();renderEntries();updateSummary();previewPlayer.refresh();}
 function closeDialog(){if(importInProgress){cancelActiveImport?.();return;}if(clearingCache||historyBusy||(updateDialogActive&&(updateInfo?.mandatory||appUpdateInstalling)))return;updateDialogActive=false;find('#loc-close').hidden=false;const cleanup=dialogCleanup;dialogCleanup=null;if(cleanup)cleanup();find('#loc-overlay').hidden=true;if(restoreFocus&&restoreFocus.isConnected)restoreFocus.focus();}
 function openDialog(title){if(updateDialogActive&&(updateInfo?.mandatory||appUpdateInstalling))return element('div');closeDialog();restoreFocus=document.activeElement;find('#loc-dialog-title').textContent=title;const content=find('#loc-dialog-content');content.replaceChildren();find('#loc-overlay').hidden=false;find('#loc-close').focus();return content;}
-function packet(mode){requireValue(tasks.length&&currentProjectId&&fileVersion&&state.selected.size,'请先导入 ZIP 并勾选交付任务。');exportSequence=Math.max(exportSequence,fileVersion.revision)+1;changeSaved();return {format:'mida-localization',formatVersion:1,projectId:currentProjectId,packageId:localizationUuid(),parentPackageId:currentPackageId,fileVersion:{lineageId:fileVersion.lineageId,revision:exportSequence},exportedAt:new Date().toISOString(),deliveryState:mode,tasks:[...state.selected].sort((left,right)=>left-right).map(index=>({...tasks[index],entries:tasks[index].entries.map(entry=>({...entry}))}))};}
+async function packet(mode){
+ requireValue(tasks.length&&currentProjectId&&fileVersion&&state.selected.size,'请先导入 ZIP 并勾选交付任务。');
+ const document={format:'mida-localization',formatVersion:1,projectId:currentProjectId,parentPackageId:currentPackageId,fileVersion:{...fileVersion,revision:Math.max(exportSequence,fileVersion.revision)},deliveryState:mode,tasks:[...state.selected].sort((left,right)=>left-right).map(index=>structuredClone(tasks[index]))};
+ const data=await LocalizationWorkload.makePacket(workLedger,document);
+ exportSequence=Math.max(exportSequence,data.fileVersion.revision);changeSaved();
+ await saveWorkspace();
+ return data;
+}
 function isLegacyTaskWideReview(old,entry){
  const legacyReasons={baseline_missing:'尚无已确认版本，请复核全部对话',baseline_unreadable:'无法读取已确认版本，请复核全部对话',source_revision_changed:'源对话版本已变化，请复核全部对话',translation_revision_changed:'译文版本已变化，请复核全部对话'};
  return old.review.state==='pending'&&old.issuesAtExport.length>0&&old.issuesAtExport.every(issue=>Object.hasOwn(legacyReasons,issue))&&
@@ -614,7 +678,7 @@ async function planMerge(incoming,checkpoint){
  const incomingKeys=new Set(incoming.task.entries.map(entry=>entry.key));
  if(incomingKeys.size!==incoming.task.entries.length)throw new Error('新版存在重复词条，未修改当前任务。');
  const stats={reused:0,changed:0,added:0,removed:previous.entries.filter(entry=>!incomingKeys.has(entry.key)).length,unfinished:0,conflicts:0};
- const merged={...incoming.task,...metadataUpdates,entries:[]};
+ const merged={...incoming.task,...metadataUpdates,entries:[]},drafts=[];
  for(const [entryIndex,incomingEntry] of incoming.task.entries.entries()){
   if(entryIndex%256===0)await checkpoint();
   const entry=structuredClone(incomingEntry);merged.entries.push(entry);
@@ -622,6 +686,7 @@ async function planMerge(incoming,checkpoint){
   if(!old){stats.added++;entry.review={state:'pending',reason:'新版新增对话，请填写译文'};continue;}
   const draft=editingEntries.get(old);const existingText=draft?.text??old.translation;
   const sameSource=old.currentSource===entry.currentSource&&old.speakerKey===entry.speakerKey;
+  if(draft)drafts.push({key:entry.key,text:draft.text,before:{translation:draft.before?.translation??old.translation,state:old.currentSource===entry.currentSource?(draft.before?.state??old.review.state):'pending'}});
   const targetChanged=old.translationAtExport!==entry.translationAtExport;
   if(draft)stats.unfinished++;
   const preserveEmpty=old.review.state==='confirmed'&&LocalizationWorkspaceStore.allowsEmptyTranslation(previous,old);
@@ -631,7 +696,9 @@ async function planMerge(incoming,checkpoint){
   if(LocalizationWorkspaceStore.acceptsTranslation(incoming.task,entry,existingText)){stats.reused++;entry.translation=existingText;entry.review={state:draft?'pending':old.review.state,reason:draft?'保留了尚未确定的编辑内容':old.review.reason};if(old.review.state==='pending'&&!draft)entry.review.reason=old.review.reason||old.issuesAtExport.map(issue=>issueNames[issue]).join(' · ');}
   else {if(draft)entry.translation=existingText;entry.review={state:'pending',reason:'译文仍未完成，请编辑后确定'};}
  }
- return {index,previous,merged,stats,unchanged:false};
+ const mergedByKey=new Map(merged.entries.map(entry=>[entry.key,entry]));
+ for(const draft of drafts)mergedByKey.get(draft.key).translation=draft.before.translation;
+ return {index,previous,merged,stats,drafts,unchanged:false};
 }
 function requireValue(condition,message){if(!condition)throw new Error(message);}
 function validVersion(value){return value&&typeof value.lineageId==='string'&&value.lineageId.length>0&&Number.isSafeInteger(value.revision)&&value.revision>0;}
@@ -734,9 +801,9 @@ async function validateDialogueData(data,manifest,taskKeys,asset,checkpoint){
  return data.tasks;
 }
 function showVersionImport(initialFile){
- if(historyView||historyBusy||importInProgress||switchingSpace||clearingCache||appUpdateInstalling||updateDialogActive||!storageReady){setNotice('请先返回当前最新版本，并等待当前操作完成后导入。');return;}
+ if(historyView||historyBusy||importInProgress||exporting||switchingSpace||clearingCache||appUpdateInstalling||updateDialogActive||!storageReady){setNotice('请先返回当前最新版本，并等待当前操作完成后导入。');return;}
  let importStore=workspaceStore,targetSpace=null;
- const content=openDialog(tasks.length?'导入新版本':'导入 ZIP');let manifest=null,loaded=null,loadToken=0,mediaImportToken=null,incomingPreviews=Object.create(null);
+ const content=openDialog(tasks.length?'导入新版本':'导入 ZIP');let manifest=null,loaded=null,loadToken=0,mediaImportToken=null,incomingPreviews=Object.create(null),wireFingerprint=null;
  let cancelled=false,committing=false,busy=true,requestId=null,unlisten=null,pollTimer=null,parser=null,rejectParse=null,disposed=false,unlocked=false,cancelCompletion=null;
  const savedInert=new Map([...root.children].filter(child=>child.id!=='loc-overlay').map(child=>[child,child.inert]));
  const unlock=()=>{if(unlocked)return;unlocked=true;for(const [child,inert] of savedInert)child.inert=inert;root.removeAttribute('aria-busy');find('#loc-close').disabled=false;importInProgress=false;cancelActiveImport=null;};
@@ -817,12 +884,17 @@ function showVersionImport(initialFile){
    stopProgress();requestId=null;
    mediaImportToken=result.mediaImportToken;await checkpoint();requireValue(typeof mediaImportToken==='string'&&mediaImportToken,'本机导入服务需要升级，缺少安全媒体事务标识。');
    manifest=validateManifest(result.manifest,false);incomingPreviews=validatePreviewReferences(result,manifest);
-   const allTasks=[],taskKeys=new Set();
+   const allTasks=[],wireHashes=[],wireProgress={progressChars:0,totalChars:0},taskKeys=new Set();let wireHeader=null;
    const dialogueAssets=manifest.assets.filter(item=>item.type==='localization-dialogues');
    for(const [assetIndex,asset] of dialogueAssets.entries()){
     report(60+15*assetIndex/dialogueAssets.length,'整理片段 '+(assetIndex+1)+' / '+dialogueAssets.length);await checkpoint();
     const text=result.assets[asset.path];requireValue(typeof text==='string','缺少清单资产：'+asset.path);
     const data=await parsePart(text,nativeApp?null:asset.sha256);
+    if(manifest.workload&&Array.isArray(data.tasks)){
+     wireHeader={parentPackageId:data.parentPackageId,deliveryState:data.deliveryState};
+     wireHashes.push(...await LocalizationWorkload.hashTasks(data.tasks));
+     const stats=LocalizationWorkload.progress(data.tasks);wireProgress.progressChars+=stats.progressChars;wireProgress.totalChars+=stats.totalChars;
+    }
     allTasks.push(...await validateDialogueData(data,manifest,taskKeys,asset,checkpoint));
    }
    requireValue(allTasks.length<=1000,'本次导入超过 1000 个语言任务。');
@@ -832,6 +904,8 @@ function showVersionImport(initialFile){
    if(spaceLanguage()&&languages[0]!==spaceLanguage())targetSpace=languages[0]===originalSpaceLanguage?'':languages[0];
    else{validateSpaceTasks(allTasks);validateManifest(manifest);}
    requireValue(allTasks.reduce((count,task)=>count+task.entries.length,0)<=100000,'本次导入超过 100000 条对话。');
+   LocalizationWorkload.validatePackage(manifest,allTasks,manifest.workload?wireProgress:null);
+   wireFingerprint=manifest.workload?await LocalizationWorkload.fingerprint({...manifest,...wireHeader},wireHashes):null;
    headline.textContent=fileName+' · 版本 '+manifest.fileVersion.revision+' · '+manifest.assets.filter(item=>item.type==='localization-dialogues').length+' 个片段 · '+Object.keys(incomingPreviews).length+' 份预览视频';
    loaded=allTasks;
    if(targetSpace!==null){
@@ -867,14 +941,15 @@ function showVersionImport(initialFile){
     importStore=targetStore;
    }else{validateSpaceTasks(loaded);validateManifest(manifest);}
    const plans=await createPlans(86,92);await checkpoint();
+   const nextLedger=LocalizationWorkload.mergeIncoming(workLedger,manifest,loaded,wireFingerprint);
    const nextTasks=currentProjectId?tasks.slice():[];const selected=currentProjectId?new Set(state.selected):new Set();let active=0;
    for(const [planIndex,plan] of plans.entries()){await checkpoint();report(92+2*(planIndex+1)/plans.length,'应用片段 '+(planIndex+1)+' / '+plans.length);if(plan.unchanged){Object.assign(nextTasks[plan.index],plan.metadataUpdates);const updates=new Map(plan.snapshotUpdates.map(entry=>[entry.key,entry.englishTranslationAtExport]));for(const [entryIndex,entry] of nextTasks[plan.index].entries.entries()){if(entryIndex%256===0)await checkpoint();if(updates.has(entry.key))entry.englishTranslationAtExport=updates.get(entry.key);}active=plan.index;continue;}const index=plan.index<0?nextTasks.length:plan.index;nextTasks[index]=plan.merged;selected.add(index);active=index;}
    if(!currentProjectId)editingEntries.clear();else plans.forEach(plan=>{if(!plan.unchanged&&plan.previous)plan.previous.entries.forEach(entry=>editingEntries.delete(entry));});
-   tasks.splice(0,tasks.length,...nextTasks);currentProjectId=manifest.projectId;currentManifest=structuredClone(manifest);currentPackageId=manifest.packageId;fileVersion={...manifest.fileVersion};
+   for(const plan of plans){if(!plan.drafts?.length)continue;const byKey=new Map(plan.merged.entries.map(entry=>[entry.key,entry]));for(const draft of plan.drafts)editingEntries.set(byKey.get(draft.key),{text:draft.text,before:draft.before});}
+   tasks.splice(0,tasks.length,...nextTasks);workLedger=nextLedger;currentProjectId=manifest.projectId;currentManifest=structuredClone(manifest);currentPackageId=manifest.packageId;fileVersion={...manifest.fileVersion};
    for(const partName of new Set([...loaded.map(task=>task.partName),...Object.keys(incomingPreviews)])){delete previews[partName];if(Object.hasOwn(incomingPreviews,partName))previews[partName]=incomingPreviews[partName];}
    for(const partName of Object.keys(previews))if(!tasks.some(task=>ownsPreview(task,partName,previews[partName])))delete previews[partName];
    state.active=active;state.selected=selected;state.filter='all';state.search='';state.cursor=-1;find('#loc-filter').value='all';find('#loc-search').value='';
-   find('#loc-data-origin').textContent='已导入压缩包 · '+new Set(loaded.map(task=>task.partName)).size+' 个片段';
    await checkpoint();committing=true;cancel.disabled=true;find('#loc-close').disabled=true;progress.removeAttribute('value');progressText.textContent='正在原子保存，请稍候；此阶段不能取消。';await new Promise(resolve=>setTimeout(resolve,0));
    changeSaved();const record=await saveWorkspace('导入新版本后',mediaImportToken);committed=true;mediaImportToken=null;progress.value=100;progressText.textContent='导入完成 · 100%';unlock();if(workspaceStore.spaceId)knownSpaces.add(workspaceStore.spaceId);else originalSpaceLanguage=loaded[0].language;rememberSpaces();renderAll();closeDialog();find('#loc-sentences').scrollTop=0;setNotice(record.mediaWarning||'版本导入完成并已自动保存；同片段旧视频已清理。译文可通过备份恢复，旧视频不会恢复。');
   }catch(error){
@@ -936,10 +1011,10 @@ async function attemptExport(allowUnresolved=false){
   const actions=element('div','dialogbottom'),cancel=element('button','','否'),confirm=element('button','primary','是');
   cancel.addEventListener('click',closeDialog);confirm.addEventListener('click',()=>{closeDialog();attemptExport(true);});actions.append(cancel,confirm);content.append(actions);return;
  }
- exporting=true;const button=find('#loc-export');button.disabled=true;setNotice('正在导出…');
- try{await exportPackage(packet(unresolved?'draft':'ready'),Boolean(unresolved&&allowUnresolved));}
+ exporting=true;const button=find('#loc-export');button.disabled=true;root.inert=true;setNotice('正在保存交付快照并导出…');
+ try{await saveQueue.catch(()=>{});const data=await packet(unresolved?'draft':'ready');await exportPackage(data,Boolean(unresolved&&allowUnresolved));}
  catch(error){setNotice('导出失败，当前编辑保留：'+String(error)+(nativeApp?'':'。请通过 serve.py 启动本地编辑器。'));}
- finally{exporting=false;updateSummary();}
+ finally{exporting=false;root.inert=Boolean(clearingCache);updateSummary();}
 }
 find('#loc-export').addEventListener('click',()=>attemptExport());
 find('#loc-next').addEventListener('click',()=>moveToNextPending());
@@ -956,7 +1031,7 @@ if(cacheChannel)cacheChannel.onmessage=event=>{
 function showClearCache(){
  if(historyView||historyBusy||importInProgress||switchingSpace||appUpdateInstalling||clearingCache){setNotice('请先返回当前最新版本，并等待当前操作完成后再清空缓存。');return;}
  const content=openDialog('确定要清空？');
- content.append(element('p','helper','将永久删除所有语言空间的任务、译文、未确认草稿、历史自动保存、备份和预览视频缓存，无法恢复。不会删除你选择的原始 ZIP 或已导出的文件。'));
+ content.append(element('p','helper','将永久删除所有语言空间的任务、译文、工作量台账、交付历史与回执、未确认草稿、历史自动保存、备份和预览视频缓存，无法恢复。不会删除你选择的原始 ZIP 或已导出的文件。'));
  const actions=element('div','dialogbottom'),cancel=element('button','','取消'),confirm=element('button','danger','确定'),progress=element('p','helper');
  cancel.addEventListener('click',closeDialog);actions.append(cancel,confirm);content.append(progress,actions);
  confirm.addEventListener('click',async()=>{

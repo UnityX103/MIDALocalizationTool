@@ -199,6 +199,7 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport, progres
     let mut paths = HashSet::new();
     let mut delivery = None;
     let mut counts = TaskCounts::default();
+    let mut workload_progress = crate::workload::TaskProgress::default();
     for (asset_index, asset) in assets.iter().enumerate() {
         progress(0.65 + 0.20 * asset_index as f64 / assets.len() as f64, "校验对话数据")?;
         if asset.get("type").and_then(Value::as_str) != Some("localization-dialogues") {
@@ -259,6 +260,9 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport, progres
         }
         delivery = Some(current_delivery);
         validate_tasks(&data, Some(part_name), &mut counts)?;
+        if manifest.get("workload").is_some() {
+            for task in data["tasks"].as_array().ok_or("对话任务无效")? { workload_progress.add(task)?; }
+        }
         for value in std::iter::once(&data).chain(data["tasks"].as_array().ok_or("对话任务无效")?) {
             if unit_metadata(value)?.iter().any(|(field, value)|
                 metadata.get(field).and_then(Value::as_str).unwrap_or("") != value.as_str().unwrap_or("")) {
@@ -268,6 +272,7 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport, progres
         texts.insert(asset_path, Value::String(text));
     }
     if stage.parts.is_empty() { return Err("ZIP 缺少对话片段".into()); }
+    crate::workload::validate_summary(&manifest, &workload_progress)?;
     let mut media_assets: HashMap<&str, (Option<&Value>, Option<&Value>)> = HashMap::new();
     for asset in assets.iter().filter(|asset| asset["type"] != "localization-dialogues") {
         let part = nonempty_text(asset, "partName")?;
@@ -322,6 +327,7 @@ pub fn build_package(document: &Value, output: &mut File) -> Result<(), String> 
     validate_data(document, false)?;
     validate_tasks(document, None, &mut TaskCounts::default())?;
     let tasks = nonempty_array(document, "tasks", MAX_TASKS)?;
+    crate::workload::validate(document, &tasks.iter().collect::<Vec<_>>())?;
     let mut groups: Vec<(&str, Vec<&Value>)> = Vec::new();
     let mut group_indices = HashMap::new();
     for task in tasks {
@@ -343,6 +349,9 @@ pub fn build_package(document: &Value, output: &mut File) -> Result<(), String> 
     }
     manifest.insert("format".into(), json!("mida-localization-manifest"));
     manifest.insert("formatVersion".into(), json!(2));
+    for field in crate::workload::FIELDS {
+        if let Some(value) = document.get(field) { manifest.insert(field.into(), value.clone()); }
+    }
     let mut assets = Vec::new();
     let mut files = Vec::new();
     let mut paths = HashSet::new();
@@ -359,7 +368,7 @@ pub fn build_package(document: &Value, output: &mut File) -> Result<(), String> 
         }
         let mut data: Map<String, Value> = source
             .iter()
-            .filter(|(key, _)| !matches!(key.as_str(), "tasks" | "previews" | "previewPartNames" | "unitKind" | "chapterName"))
+            .filter(|(key, _)| !matches!(key.as_str(), "tasks" | "previews" | "previewPartNames" | "unitKind" | "chapterName" | "delivery" | "workload" | "workReceipts"))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         data.insert(
@@ -623,11 +632,7 @@ fn validate_tasks(
                 .ok_or("词条译文不是文本")?;
             if ready
                 && (state != Some("confirmed")
-                    || (!allows_empty_translation(task, entry) && translation
-                        .trim_matches(|character: char| {
-                            character.is_whitespace() || character == '\u{feff}'
-                        })
-                        .is_empty()))
+                    || (!allows_empty_translation(task, entry) && !crate::workload::has_text(translation)))
             {
                 return Err(format!("仍有未完成或空译文：{part} / {key}"));
             }

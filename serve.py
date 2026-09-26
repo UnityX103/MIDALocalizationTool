@@ -196,7 +196,7 @@ class EditorHandler(BaseHTTPRequestHandler):
             self.reply(200, (ROOT / 'prototype.html').read_bytes(), 'text/html; charset=utf-8')
         elif path == '/app-icon.svg':
             self.reply(200, (ROOT / 'app-icon.svg').read_bytes(), 'image/svg+xml')
-        elif path in ('/workspace-store.js', '/preview-player.js', '/import-worker.js'):
+        elif path in ('/workspace-store.js', '/workload.js', '/preview-player.js', '/import-worker.js'):
             try:
                 self.reply(200, (ROOT / path[1:]).read_bytes(), 'text/javascript; charset=utf-8')
             except FileNotFoundError:
@@ -256,21 +256,13 @@ class EditorHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
 
     def do_POST(self):
-        with self.server.operation_lock:
-            self.handle_post()
-
-    def handle_post(self):
-        self.close_connection = True
-        if not self.valid_host() or self.headers.get_all('Origin') != [self.server.origin]:
-            self.reply(403, {'error': '不允许跨站操作'})
-            return
         # Progress/cancel must remain reachable while upload holds the operation lock.
         if self.path in ('/api/import/start', '/api/import/status', '/api/import/cancel'):
             self.handle_import_control()
             return
-        if self.path not in ('/api/export', '/api/import', '/api/media/commit', '/api/media/discard', '/api/media/info', '/api/media/relocate', '/api/cache/clear'):
-            self.reply(404, {'error': '接口不存在'})
-            return
+        with self.server.operation_lock:
+            self.handle_post()
+
     def handle_import_control(self):
         self.close_connection = True
         if not self.valid_host() or self.headers.get_all('Origin') != [self.server.origin]:
@@ -303,6 +295,14 @@ class EditorHandler(BaseHTTPRequestHandler):
         except (ValueError, OSError) as error:
             self.reply(400, {'error': str(error)})
 
+    def handle_post(self):
+        self.close_connection = True
+        if not self.valid_host() or self.headers.get_all('Origin') != [self.server.origin]:
+            self.reply(403, {'error': '不允许跨站操作'})
+            return
+        if self.path not in ('/api/export', '/api/import', '/api/media/commit', '/api/media/discard', '/api/media/info', '/api/media/relocate', '/api/cache/clear'):
+            self.reply(404, {'error': '接口不存在'})
+            return
         expected_type = 'application/zip' if self.path == '/api/import' else 'application/json'
         if self.headers.get_content_type() != expected_type or self.headers.get('Transfer-Encoding'):
             self.reply(415, {'error': '请求文件类型不正确'})

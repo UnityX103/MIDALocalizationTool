@@ -6,6 +6,7 @@ import struct
 import zipfile
 from contextlib import nullcontext
 from uuid import uuid4
+from workload_protocol import FIELDS as WORKLOAD_FIELDS, validate_workload, text as has_translation_text
 
 
 MAX_EXPORT_BYTES = 128 * 1024 * 1024
@@ -80,7 +81,7 @@ def allows_empty_translation(task, entry):
 
 def accepts_translation(task, entry, text):
     return (isinstance(text, str)
-            and (bool(text.strip()) or allows_empty_translation(task, entry)))
+            and (has_translation_text(text) or allows_empty_translation(task, entry)))
 
 
 def validate_ready_entry(task, entry):
@@ -438,6 +439,7 @@ def read_package(source, media_directory, progress=lambda fraction, phase: None)
             if task_count > 1000 or entry_count > 100000:
                 raise ValueError('任务或词条总数超过上限')
             texts[asset['path']], tasks_by_part[part_name] = text, tasks
+        validate_workload(manifest, [task for group in tasks_by_part.values() for task in group])
         for part_name, group in media_assets.items():
             video, map_asset = group['localization-preview-video'], group['localization-preview-map']
             media_id = uuid4().hex
@@ -461,7 +463,9 @@ def read_package(source, media_directory, progress=lambda fraction, phase: None)
 
 
 def write_package(output, document):
+    validate_workload(document, document['tasks'])
     manifest = {key: document[key] for key in ('projectId', 'packageId', 'fileVersion', 'exportedAt')}
+    manifest.update({key: document[key] for key in WORKLOAD_FIELDS if key in document})
     manifest.update(format='mida-localization-manifest', formatVersion=2, assets=[])
     groups = {}
     for task in document['tasks']:
@@ -481,7 +485,7 @@ def write_package(output, document):
         if path.casefold() in paths:
             raise ValueError('片段文件名存在大小写冲突')
         paths.add(path.casefold())
-        data = {key: value for key, value in document.items() if key not in ('tasks', 'previews', 'previewPartNames', *UNIT_FIELDS)}
+        data = {key: value for key, value in document.items() if key not in ('tasks', 'previews', 'previewPartNames', *UNIT_FIELDS, *WORKLOAD_FIELDS)}
         exported_tasks = [{key: value for key, value in task.items() if key != 'previewPartNames'} for task in tasks]
         content = json.dumps(dict(data, **metadata, tasks=exported_tasks), ensure_ascii=False, indent=2).encode('utf-8')
         text_total += len(content)

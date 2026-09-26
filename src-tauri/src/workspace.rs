@@ -323,7 +323,7 @@ pub fn save_task(root: &Path, task: Value, task_index: usize, project_id: &str, 
     let old_blob = reference["blob"].as_str().ok_or("片段文件标识无效")?.to_owned();
     validate_snapshot(&json!({"format":"mida-localization-workspace","version":1,"tasks":[task]}))?;
     snapshot["taskRefs"][task_index] = write_task(&directory, &task)?;
-    for field in ["state", "exportSequence", "previewPlayer"] {
+    for field in ["state", "exportSequence", "workLedger", "previewPlayer"] {
         if let Some(value) = view.get(field) { snapshot[field] = value.clone(); }
     }
     // Confirmation saves translations only. Unconfirmed input remains in memory.

@@ -9,8 +9,9 @@ class LocalizationWorkspaceStore {
   return task?.sourceKind==='unity-minigame'&&task.assetProtocolVersion===1&&entry?.allowEmpty===true;
  }
  static acceptsTranslation(task,entry,text=entry.translation){
-  return typeof text==='string'&&(text.trim().length>0||this.allowsEmptyTranslation(task,entry));
+  return typeof text==='string'&&(this.hasText(text)||this.allowsEmptyTranslation(task,entry));
  }
+ static hasText(text){return typeof text==='string'&&/[^\u0009-\u000d\u001c-\u0020\u0085\u00a0\u1680\u2000-\u200a\u2028\u2029\u202f\u205f\u3000\ufeff]/u.test(text);}
  static readEnglishSnapshot(entry,language){
   if(Object.hasOwn(entry,'englishTranslationAtExport')){
    if(typeof entry.englishTranslationAtExport!=='string')throw new Error('旧英文快照 englishTranslationAtExport 必须是文本');
