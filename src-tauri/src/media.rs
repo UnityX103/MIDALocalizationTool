@@ -160,6 +160,7 @@ pub fn validate_map(
     recording: &str,
     video_hash: &str,
 ) -> Result<(), String> {
+    crate::package::validate_optional_unit_name(map, "chapterName")?;
     if map["format"] != "mida-localization-preview"
         || map["formatVersion"].as_u64() != Some(1)
         || map["projectId"] != project
@@ -196,6 +197,12 @@ pub fn validate_map(
     let mut occurrences: HashMap<&str, u64> = HashMap::new();
     let mut last = (0, 0);
     for event in events {
+        if let Some(source) = event.get("sourceUnit").filter(|source| !source.is_null()) {
+            let source = source.as_str().ok_or("sourceUnit 必须是文本或空值")?;
+            if !source.trim().is_empty() && source.chars().any(char::is_control) {
+                return Err("sourceUnit 包含无效字符".into());
+            }
+        }
         let name = text(event, "packageName")?;
         let occurrence = integer(event, "occurrence", 1)?;
         let frame = integer(event, "frame", 0)?;
@@ -303,7 +310,7 @@ pub fn validate_references(snapshot: &Value) -> Result<(), String> {
         let project = text(snapshot, "currentProjectId")?;
         if !snapshot["tasks"]
             .as_array()
-            .is_some_and(|tasks| tasks.iter().any(|task| task["partName"] == *part))
+            .is_some_and(|tasks| tasks.iter().any(|task| crate::package::owns_preview(task, part, &preview["map"])))
         {
             return Err("工作区媒体引用没有对应任务".into());
         }
@@ -325,7 +332,8 @@ pub fn promote(
 ) -> Result<Vec<PathBuf>, String> {
     let tasks = snapshot["tasks"].as_array().ok_or("工作区任务无效")?;
     for part in &stage.parts {
-        if !tasks.iter().any(|task| task["partName"] == *part) {
+        if !tasks.iter().any(|task| task["partName"] == *part
+            || stage.previews.get(part).is_some_and(|preview| crate::package::owns_preview(task, part, &preview["map"]))) {
             return Err("导入片段不在待保存工作区内".into());
         }
     }

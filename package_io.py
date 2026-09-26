@@ -17,6 +17,7 @@ CHUNK_BYTES = 1024 * 1024
 MAX_INTEGER = 9007199254740991
 MEDIA_TYPES = {'localization-preview-video': ('video', 'video.mp4'),
                'localization-preview-map': ('map', 'dialogue-map.json')}
+UNIT_FIELDS = ('unitKind', 'chapterName')
 
 
 def parse_json(content):
@@ -117,12 +118,73 @@ def task_package_names(tasks):
     return names
 
 
+def unit_metadata(value):
+    if not isinstance(value, dict):
+        raise ValueError('本地化单元结构无效')
+    metadata = {field: value[field] for field in UNIT_FIELDS if field in value}
+    if 'unitKind' in metadata and metadata['unitKind'] not in ('chapter', 'part'):
+        raise ValueError('unitKind 必须是 chapter 或 part')
+    validate_optional_unit_name(metadata, 'chapterName')
+    return metadata
+
+
+def validate_optional_unit_name(value, field):
+    name = value.get(field)
+    if name is not None:
+        if not isinstance(name, str):
+            raise ValueError(field + ' 必须是文本或空值')
+        if name.strip():
+            part_asset_path(name)
+
+
+def preview_part_names(asset):
+    if 'previewPartNames' in asset:
+        part_asset_path(asset.get('partName'))
+        names = asset['previewPartNames']
+        if (asset.get('unitKind') != 'chapter' or not isinstance(names, list)
+                or len(names) > MAX_PARTS):
+            raise ValueError('只有章节可以声明 previewPartNames，且最多 200 个片段')
+        paths = [part_asset_path(name).casefold() for name in names]
+        if len(set(paths)) != len(paths) or asset['partName'].casefold() in [name.casefold() for name in names]:
+            raise ValueError('章节预览片段重复或指向章节自身')
+        return names
+    return []
+
+
+def validate_unit_tasks(asset, data):
+    metadata = unit_metadata(asset)
+    for value in [data, *data['tasks']]:
+        if any((metadata.get(field) or '') != (item or '') for field, item in unit_metadata(value).items()):
+            raise ValueError('JSON 根、任务与清单的本地化单元元数据不一致')
+    return metadata
+
+
+def validate_media_owner(mapping, part_name, dialogue_assets):
+    direct = dialogue_assets.get(part_name)
+    owners = [asset['partName'] for asset in dialogue_assets.values()
+              if asset.get('unitKind') == 'chapter' and part_name in preview_part_names(asset)]
+    if direct and direct.get('unitKind') == 'chapter':
+        raise ValueError('章节不是录制片段，不能拥有自己的视频')
+    if not direct and not owners:
+        raise ValueError('媒体没有对应片段或章节声明')
+    if mapping is None:
+        return
+    chapter = mapping.get('chapterName')
+    if chapter and chapter.strip():
+        if direct and direct.get('chapterName') and direct['chapterName'].strip() and chapter != direct['chapterName']:
+            raise ValueError('预览映射与片段声明的章节不一致')
+    for owner in owners:
+        if chapter != owner or not any(event.get('sourceUnit') == owner for event in mapping['events']):
+            raise ValueError('章节声明的媒体缺少匹配 chapterName 和 sourceUnit 的真实事件')
+
+
 def validate_map(mapping, project_id, part_name, recording_id, video_hash, packages):
     fields = {'format', 'formatVersion', 'projectId', 'partName', 'recordingId',
               'hashAlgorithmVersion', 'catalogHash', 'recordedPackagesHash', 'packageNames',
               'recordedPackageNames', 'videoSha256', 'durationMs', 'frameRate', 'events'}
-    if not isinstance(mapping, dict) or set(mapping) != fields:
+    if not isinstance(mapping, dict) or not fields <= set(mapping) or set(mapping) - fields - {'chapterName'}:
         raise ValueError('预览映射字段缺失或包含未知字段')
+    validate_optional_unit_name(mapping, 'chapterName')
     if (mapping['format'] != 'mida-localization-preview'
             or type(mapping['formatVersion']) is not int or mapping['formatVersion'] != 1
             or mapping['hashAlgorithmVersion'] != 'package-names-v1'
@@ -140,7 +202,7 @@ def validate_map(mapping, project_id, part_name, recording_id, video_hash, packa
             raise ValueError('预览包名列表或哈希无效：' + field)
     catalog = set(mapping['packageNames'])
     recorded = set(mapping['recordedPackageNames'])
-    if catalog != set(packages) or not recorded <= catalog:
+    if (packages is not None and catalog != set(packages)) or not recorded <= catalog:
         raise ValueError('预览目录与所选任务包名不一致，或录制包不属于目录：' + part_name)
     events = mapping['events']
     if not isinstance(events, list) or len(events) > 100000:
@@ -149,8 +211,12 @@ def validate_map(mapping, project_id, part_name, recording_id, video_hash, packa
     previous_frame = -1
     previous_time = -1
     for event in events:
-        if not isinstance(event, dict) or set(event) != {'packageName', 'occurrence', 'frame', 'timeMs'}:
+        event_fields = {'packageName', 'occurrence', 'frame', 'timeMs'}
+        if not isinstance(event, dict) or not event_fields <= set(event) or set(event) - event_fields - {'sourceUnit'}:
             raise ValueError('预览事件包含缺失或未知字段')
+        source = event.get('sourceUnit')
+        if source is not None and (not isinstance(source, str) or source.strip() and not valid_text(source)):
+            raise ValueError('预览事件 sourceUnit 必须是文本或空值')
         name, frame, time_ms = event['packageName'], event['frame'], event['timeMs']
         if (not valid_text(name) or name not in recorded
                 or not valid_integer(event['occurrence'], 1)
@@ -185,6 +251,8 @@ def validate_manifest(manifest):
         kind, part_name = asset.get('type'), asset.get('partName')
         dialogue_path = part_asset_path(part_name)
         if kind == 'localization-dialogues':
+            unit_metadata(asset)
+            preview_part_names(asset)
             expected_path, expected_id = dialogue_path, part_name
             if part_name in dialogue_assets:
                 raise ValueError('同片段存在重复对话资产')
@@ -208,8 +276,12 @@ def validate_manifest(manifest):
         paths.add(expected_path.casefold())
     if not 0 < len(dialogue_assets) <= MAX_PARTS:
         raise ValueError('对话片段为空或超过 200 个')
+    for asset in dialogue_assets.values():
+        if any(part not in media_assets for part in preview_part_names(asset)):
+            raise ValueError('previewPartNames 只能声明本 ZIP 实际携带的配对媒体')
     for part_name, group in media_assets.items():
-        if (part_name not in dialogue_assets or set(group) != set(MEDIA_TYPES)
+        validate_media_owner(None, part_name, dialogue_assets)
+        if (set(group) != set(MEDIA_TYPES)
                 or len({asset['recordingId'] for asset in group.values()}) != 1):
             raise ValueError('预览资产未成对、录制身份不一致或缺少所属片段')
     return dialogue_assets, media_assets
@@ -341,6 +413,7 @@ def read_package(source, media_directory, progress=lambda fraction, phase: None)
             tasks = data.get('tasks')
             if not isinstance(tasks, list) or not tasks:
                 raise ValueError('片段文件没有任务')
+            validate_unit_tasks(asset, data)
             task_count += len(tasks)
             languages = set()
             for task in tasks:
@@ -375,7 +448,12 @@ def read_package(source, media_directory, progress=lambda fraction, phase: None)
             if digest != map_asset['sha256']:
                 raise ValueError('映射哈希校验失败：' + part_name)
             mapping = parse_json(content.decode('utf-8'))
-            validate_map(mapping, manifest['projectId'], part_name, video['recordingId'], video['sha256'], task_package_names(tasks_by_part[part_name]))
+            # Chapter recordings can contain source units whose dialogue JSON is not in this ZIP.
+            has_chapter = isinstance(mapping, dict) and isinstance(mapping.get('chapterName'), str) and mapping['chapterName'].strip()
+            packages = (task_package_names(tasks_by_part[part_name])
+                        if part_name in tasks_by_part and not has_chapter else None)
+            validate_map(mapping, manifest['projectId'], part_name, video['recordingId'], video['sha256'], packages)
+            validate_media_owner(mapping, part_name, dialogue_assets)
             (media_directory / (media_id + '.json')).write_bytes(content)
             previews[part_name] = {'recordingId': video['recordingId'], 'map': mapping, 'mediaId': media_id}
         progress(1, '校验完成')
@@ -396,18 +474,24 @@ def write_package(output, document):
         raise ValueError('一次最多导出 200 个片段')
     files, paths, text_total = {}, set(), 0
     for part_name, tasks in groups.items():
+        metadata = unit_metadata(tasks[0])
+        if any(unit_metadata(task) != metadata for task in tasks):
+            raise ValueError('同单元不同语言的章节元数据不一致')
         path = part_asset_path(part_name)
         if path.casefold() in paths:
             raise ValueError('片段文件名存在大小写冲突')
         paths.add(path.casefold())
-        data = {key: value for key, value in document.items() if key not in ('tasks', 'previews')}
-        content = json.dumps(dict(data, tasks=tasks), ensure_ascii=False, indent=2).encode('utf-8')
+        data = {key: value for key, value in document.items() if key not in ('tasks', 'previews', 'previewPartNames', *UNIT_FIELDS)}
+        exported_tasks = [{key: value for key, value in task.items() if key != 'previewPartNames'} for task in tasks]
+        content = json.dumps(dict(data, **metadata, tasks=exported_tasks), ensure_ascii=False, indent=2).encode('utf-8')
         text_total += len(content)
         if len(content) > MAX_ENTRY_BYTES or text_total > MAX_EXPORT_BYTES:
             raise ValueError('片段文件或文本总大小超过上限')
         files[path] = content
         manifest['assets'].append({'id': part_name, 'partName': part_name, 'type': 'localization-dialogues',
-                                   'path': path, 'sha256': hashlib.sha256(content).hexdigest()})
+                                   'path': path, 'sha256': hashlib.sha256(content).hexdigest(), **metadata})
+        if metadata.get('unitKind') == 'chapter':
+            manifest['assets'][-1]['previewPartNames'] = []
     manifest_bytes = json.dumps(manifest, ensure_ascii=False, indent=2).encode('utf-8')
     text_total += len(manifest_bytes)
     if len(manifest_bytes) > MAX_ENTRY_BYTES or text_total > MAX_EXPORT_BYTES:

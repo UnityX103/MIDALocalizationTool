@@ -167,6 +167,7 @@ class MediaStore:
             upload.unlink()
             project_id = result['manifest']['projectId']
             parts = [asset['partName'] for asset in result['manifest']['assets'] if asset['type'] == 'localization-dialogues']
+            parts = list(dict.fromkeys([*parts, *result['previews']]))
             records = {}
             for part_name, preview in result['previews'].items():
                 media_id = preview['mediaId']

@@ -52,8 +52,9 @@ body{padding:12px}
 #mida-loc-app .shell{height:auto;min-height:0;min-width:0;flex:1;overflow:hidden}
 #mida-loc-app .appbar,#mida-loc-app .statusbar,#mida-loc-app .footer{flex-shrink:0}
 #mida-loc-app .preview-panel{flex:0 0 var(--preview-size,38%);min-height:0;min-width:0;background:var(--loc-pane);padding:8px 12px;display:flex;flex-direction:column;overflow:hidden}
-#mida-loc-app .preview-header{display:flex;align-items:center;justify-content:space-between;gap:12px}
+#mida-loc-app .preview-header{display:flex;flex-wrap:wrap;align-items:center;justify-content:space-between;gap:12px}
 #mida-loc-app .preview-header strong{min-width:0;overflow-wrap:anywhere}
+#mida-loc-app .preview-header select{min-width:0;max-width:100%;width:320px}
 #mida-loc-app .preview-body{padding-top:10px;flex:1;min-height:0;display:flex;flex-direction:column;align-items:center;justify-content:center;overflow:hidden}
 #mida-loc-app .preview-body video{display:block;width:100%;height:100%;min-height:0;flex:1;background:#15181b;object-fit:contain;aspect-ratio:16/9}
 #mida-loc-app .preview-message{color:var(--loc-muted);font-size:12px}
@@ -138,6 +139,7 @@ const find=selector=>root.querySelector(selector);
 const tasks=[];
 function getPackageName(key){const separator=key.lastIndexOf('_');return separator>0?key.slice(0,separator):key;}
 function taskDisplayName(task){
+ if(task.unitKind==='chapter')return '章节 · '+task.partName;
  if(task.sourceKind!=='unity-minigame'||task.assetProtocolVersion!==1)return task.partName;
  const module=typeof task.moduleId==='string'?task.moduleId.trim():'';
  const table=typeof task.tableDisplayName==='string'&&task.tableDisplayName.trim()?task.tableDisplayName.trim():typeof task.tableId==='string'?task.tableId.trim():'';
@@ -246,7 +248,7 @@ function renderSaveState(){
 }
 function changeSaved(){if(clearingCache||historyView||historyBusy||!tasks.length)return;state.modified=true;editRevision++;renderSaveState();}
 const previewPlayer=new LocalizationPreviewPlayer(find('#loc-preview'),{
- context:()=>({projectId:currentProjectId,task:tasks[state.active],preview:previews[tasks[state.active]?.partName]}),
+ context:()=>({projectId:currentProjectId,task:tasks[state.active],previews,preview:previews[tasks[state.active]?.partName]}),
  resolve:(projectId,partName,reference)=>nativeApp?invokeNative('get_preview_media',{projectId,partName,recordingId:reference.recordingId,mediaId:reference.mediaId,spaceId:workspaceStore.spaceId}):workspaceStore.mediaRequest('info',{projectId,partName,recordingId:reference.recordingId,mediaId:reference.mediaId}),
  onChange:()=>{renderPreviewLayout();if(storageReady&&!importInProgress)changeSaved();},
  onAvailabilityChange:()=>{updatePackageVideoButtons();renderPreviewLayout();}
@@ -303,6 +305,7 @@ function validateWorkspace(snapshot){
  const identities=new Set();let count=0;
  for(const task of snapshot.tasks){
   requireValue(task&&typeof task.partName==='string'&&typeof task.language==='string'&&Array.isArray(task.entries)&&task.entries.length,'自动保存任务结构无效。');
+  unitMetadata(task);
   const identity=JSON.stringify([task.partName,task.language]);requireValue(!identities.has(identity),'自动保存任务重复。');identities.add(identity);
   count+=task.entries.length;requireValue(count<=100000,'自动保存词条超出上限。');const keys=new Set();
   for(const entry of task.entries){
@@ -321,7 +324,7 @@ function validateWorkspace(snapshot){
  requireValue(snapshot.state.taskFilter===undefined||['all','pending'].includes(snapshot.state.taskFilter),'自动保存片段筛选状态无效。');
  for(const field of ['previewWidth','previewHeight'])requireValue(snapshot.state[field]===undefined||(Number.isFinite(snapshot.state[field])&&snapshot.state[field]>=20&&snapshot.state[field]<=65),'自动保存视频大小无效。');
  requireValue(snapshot.previews===undefined||(snapshot.previews&&typeof snapshot.previews==='object'&&!Array.isArray(snapshot.previews)&&Object.keys(snapshot.previews).length<=1000),'自动保存媒体引用无效。');
- for(const [partName,preview] of Object.entries(snapshot.previews||{}))requireValue(snapshot.tasks.some(task=>task.partName===partName)&&preview&&typeof preview.recordingId==='string'&&typeof preview.mediaId==='string'&&preview.map?.partName===partName&&Array.isArray(preview.map.events)&&preview.map.events.length<=100000,'自动保存视频映射无效。');
+ for(const [partName,preview] of Object.entries(snapshot.previews||{}))requireValue(snapshot.tasks.some(task=>ownsPreview(task,partName,preview))&&preview&&typeof preview.recordingId==='string'&&typeof preview.mediaId==='string'&&preview.map?.partName===partName&&preview.map.projectId===snapshot.currentProjectId&&Array.isArray(preview.map.events)&&preview.map.events.length<=100000,'自动保存视频映射无效。');
 }
 function restoreWorkspace(snapshot){
  pendingTaskSaves.clear();
@@ -590,6 +593,9 @@ async function planMerge(incoming,checkpoint){
  const index=tasks.findIndex(task=>task.partName===incoming.task.partName&&task.language===incoming.task.language);
  if(index<0)return {index,merged:await cloneImportTask(incoming.task,checkpoint),unchanged:false,stats:{reused:0,changed:0,added:incoming.task.entries.length,removed:0,unfinished:0,conflicts:0}};
  const previous=tasks[index];
+ const previousMetadata=unitMetadata(previous),incomingMetadata=unitMetadata(incoming.task);
+ requireValue(!previous.unitKind||!incoming.task.unitKind||previous.unitKind===incoming.task.unitKind,'同一任务的 unitKind 发生变化，不能自动合并。');
+ const metadataUpdates={...previousMetadata,...incomingMetadata};
  if(incoming.task.taskVersion<previous.taskVersion)throw new Error('这是旧版本 v'+incoming.task.taskVersion+'，不会覆盖当前 v'+previous.taskVersion+'。');
  if(incoming.task.taskVersion===previous.taskVersion){
   if(incoming.task.sourceHash!==previous.sourceHash||incoming.task.targetLocalizationHashAtExport!==previous.targetLocalizationHashAtExport)throw new Error('同一任务版本的内容标识不一致，未覆盖现有编辑。');
@@ -602,13 +608,13 @@ async function planMerge(incoming,checkpoint){
    if(['currentSource','localizationSourceAtExport','translationAtExport'].some(field=>entry[field]!==next[field]))throw new Error('同一任务版本的来源快照不一致，未补充旧英文。');
    snapshotUpdates.push({key:entry.key,englishTranslationAtExport:next.englishTranslationAtExport});
   }
-  return {index,unchanged:true,snapshotUpdates};
+  return {index,unchanged:true,snapshotUpdates,metadataUpdates};
  }
  const previousByKey=new Map(previous.entries.map(entry=>[entry.key,entry]));
  const incomingKeys=new Set(incoming.task.entries.map(entry=>entry.key));
  if(incomingKeys.size!==incoming.task.entries.length)throw new Error('新版存在重复词条，未修改当前任务。');
  const stats={reused:0,changed:0,added:0,removed:previous.entries.filter(entry=>!incomingKeys.has(entry.key)).length,unfinished:0,conflicts:0};
- const merged={...incoming.task,entries:[]};
+ const merged={...incoming.task,...metadataUpdates,entries:[]};
  for(const [entryIndex,incomingEntry] of incoming.task.entries.entries()){
   if(entryIndex%256===0)await checkpoint();
   const entry=structuredClone(incomingEntry);merged.entries.push(entry);
@@ -631,6 +637,23 @@ function requireValue(condition,message){if(!condition)throw new Error(message);
 function validVersion(value){return value&&typeof value.lineageId==='string'&&value.lineageId.length>0&&Number.isSafeInteger(value.revision)&&value.revision>0;}
 function validHash(value){return typeof value==='string'&&/^[a-f0-9]{64}$/.test(value);}
 function validAssetPath(value){return typeof value==='string'&&value.length<240&&!/[\\:%\u0000-\u001f]/.test(value)&&value.split('/').every(piece=>piece&&piece!=='.'&&piece!=='..')&&(/\.(json|mp4)$/.test(value));}
+function validUnitName(value){return typeof value==='string'&&Boolean(value.trim())&&!/[\\/:*?"<>|%\u0000-\u001f\u007f-\u009f]/.test(value)&&!/[. ]$/.test(value)&&!/^(CON|PRN|AUX|NUL|COM[1-9]|LPT[1-9])(?:\.|$)/i.test(value)&&validAssetPath('parts/'+value+'.json');}
+function unitMetadata(value){
+ const metadata={};
+ for(const field of ['unitKind','chapterName'])if(Object.hasOwn(value,field))metadata[field]=structuredClone(value[field]);
+ requireValue(!Object.hasOwn(metadata,'unitKind')||['chapter','part'].includes(metadata.unitKind),'unitKind 必须是 chapter 或 part。');
+ requireValue(metadata.chapterName==null||(typeof metadata.chapterName==='string'&&(!metadata.chapterName.trim()||validUnitName(metadata.chapterName))),'chapterName 必须是有效章节名或空值。');
+ return metadata;
+}
+function previewPartNames(asset){
+ if(!Object.hasOwn(asset,'previewPartNames'))return [];
+ const names=asset.previewPartNames;
+ requireValue(asset.unitKind==='chapter'&&Array.isArray(names)&&names.length<=200&&names.every(validUnitName),'只有章节可以声明 previewPartNames，且最多 200 个真实片段名。');
+ const folded=names.map(name=>name.toLowerCase());requireValue(new Set(folded).size===names.length&&!folded.includes(asset.partName?.toLowerCase()),'章节预览片段重复或指向章节自身。');
+ return names;
+}
+function referencesPart(unit,partName){return unit.unitKind==='chapter'?(unit.previewPartNames||[]).includes(partName):unit.partName===partName;}
+function ownsPreview(unit,partName,preview){return unit.unitKind==='chapter'?Boolean(unit.partName?.trim())&&preview?.map?.chapterName===unit.partName&&preview.map.events?.some(event=>event.sourceUnit===unit.partName):unit.partName===partName;}
 function validateManifest(value,checkCurrent=true){
  requireValue(value&&value.format==='mida-localization-manifest','压缩包缺少有效的版本清单，请选择 Unity 导出的 ZIP。');
  requireValue([2,3].includes(value.formatVersion)&&validVersion(value.fileVersion),'需要逐片段文件的 v2 / v3 清单，请重新导出 ZIP。');
@@ -648,6 +671,7 @@ function validateManifest(value,checkCurrent=true){
   requireValue(typeof asset.partName==='string'&&asset.partName,'资产缺少片段标识。');
   requireValue(validAssetPath(asset.path)&&!paths.has(asset.path.toLowerCase()),'资产路径无效或重复，禁止绝对路径及上级目录。');paths.add(asset.path.toLowerCase());
   if(asset.type==='localization-dialogues'){
+   unitMetadata(asset);previewPartNames(asset);
    requireValue(asset.id===asset.partName&&asset.path==='parts/'+asset.partName+'.json'&&!parts.has(asset.partName),'每个片段必须对应独立的 JSON 文件。');parts.add(asset.partName);
   }else{
    requireValue(value.formatVersion===3&&['localization-preview-video','localization-preview-map'].includes(asset.type),'当前版本尚不支持资产类型：'+String(asset.type));
@@ -658,7 +682,9 @@ function validateManifest(value,checkCurrent=true){
   requireValue(validHash(asset.sha256),'资产缺少有效 SHA-256：'+asset.path);
  }
  requireValue(parts.size>0&&parts.size<=200,'本次导入片段数必须为 1 至 200。');
- for(const [partName,pair] of media)requireValue(parts.has(partName)&&pair.length===2&&pair[0].recordingId===pair[1].recordingId,'视频与映射必须成对且属于同一录制。');
+ const units=value.assets.filter(asset=>asset.type==='localization-dialogues');
+ for(const unit of units)requireValue(previewPartNames(unit).every(part=>media.has(part)),'previewPartNames 只能声明本 ZIP 实际携带的配对媒体。');
+ for(const [partName,pair] of media)requireValue(!units.some(unit=>unit.partName===partName&&unit.unitKind==='chapter')&&units.some(unit=>referencesPart(unit,partName))&&pair.length===2&&pair[0].recordingId===pair[1].recordingId,'视频与映射必须成对、属于同一录制，并由实际片段或章节声明。');
  return value;
 }
 function validatePreviewReferences(result,manifest){
@@ -667,7 +693,11 @@ function validatePreviewReferences(result,manifest){
   const reference=incoming[asset.partName];const map=reference?.map;
   requireValue(reference&&typeof reference.mediaId==='string'&&reference.mediaId&&reference.recordingId===asset.recordingId&&map?.format==='mida-localization-preview'&&map.formatVersion===1&&map.partName===asset.partName&&map.projectId===manifest.projectId&&map.recordingId===asset.recordingId,'预览视频与映射未通过本机校验。');
   requireValue(Array.isArray(map.events)&&map.events.length<=100000&&Array.isArray(map.packageNames)&&Number.isSafeInteger(map.durationMs)&&map.durationMs>0,'视频时长或对话映射无效。');
-  for(const event of map.events)requireValue(typeof event.packageName==='string'&&Number.isSafeInteger(event.timeMs)&&event.timeMs>=0&&event.timeMs<=map.durationMs&&Number.isSafeInteger(event.occurrence)&&event.occurrence>0,'视频时间节点无效。');
+  unitMetadata(map);
+  const direct=manifest.assets.find(unit=>unit.type==='localization-dialogues'&&unit.partName===asset.partName);
+  if(map.chapterName?.trim()&&direct?.chapterName?.trim())requireValue(direct.chapterName===map.chapterName,'视频映射与片段声明的章节不一致。');
+  for(const unit of manifest.assets.filter(unit=>unit.type==='localization-dialogues'&&unit.unitKind==='chapter'&&referencesPart(unit,asset.partName)))requireValue(ownsPreview(unit,asset.partName,reference),'章节声明的媒体缺少匹配 chapterName 和 sourceUnit 的真实事件。');
+  for(const event of map.events)requireValue(typeof event.packageName==='string'&&Number.isSafeInteger(event.timeMs)&&event.timeMs>=0&&event.timeMs<map.durationMs&&Number.isSafeInteger(event.occurrence)&&event.occurrence>0&&(event.sourceUnit==null||typeof event.sourceUnit==='string'), '视频时间节点或来源单元无效。');
   references[asset.partName]=structuredClone(reference);
  }
  requireValue(Object.keys(incoming).length===Object.keys(references).length,'存在未声明的视频引用。');return references;
@@ -676,9 +706,14 @@ async function validateDialogueData(data,manifest,taskKeys,asset,checkpoint){
  requireValue(data&&data.format==='mida-localization'&&data.formatVersion===1&&!data.demo,'不支持的对话数据格式。');
  requireValue(data.projectId===manifest.projectId&&data.packageId===manifest.packageId&&validVersion(data.fileVersion)&&data.fileVersion.lineageId===manifest.fileVersion.lineageId&&data.fileVersion.revision===manifest.fileVersion.revision,'数据文件与清单的项目、版本或包标识不一致。');
  requireValue(Array.isArray(data.tasks)&&data.tasks.length>0&&data.tasks.length<=1000,'对话任务列表为空或超出上限。');
+ const metadata=unitMetadata(asset);
+ for(const [field,value] of Object.entries(unitMetadata(data)))requireValue((metadata[field]||'')===(value||''),'JSON 根与清单的本地化单元元数据不一致。');
  for(const task of data.tasks){
   requireValue(task&&typeof task.partName==='string'&&task.partName&&typeof task.language==='string'&&task.language,'任务缺少片段或语言。');
   requireValue(task.partName===asset.partName,'片段文件包含其他片段的任务：'+asset.path);
+  for(const [field,value] of Object.entries(unitMetadata(task)))requireValue((metadata[field]||'')===(value||''),'任务与清单的本地化单元元数据不一致。');
+  delete task.previewPartNames;
+  Object.assign(task,metadata);
   const identity=JSON.stringify([task.partName,task.language]);requireValue(!taskKeys.has(identity),'出现重复片段语言任务。');taskKeys.add(identity);
   requireValue(Number.isSafeInteger(task.taskVersion)&&task.taskVersion>0&&validHash(task.sourceHash)&&(validHash(task.targetLocalizationHashAtExport)||task.targetLocalizationHashAtExport===null),'任务版本或来源哈希无效。');
   requireValue(['latest','outdated','unsupported'].includes(task.versionStatusAtExport)&&typeof task.reviewAllRequired==='boolean','任务版本状态无效。');
@@ -833,10 +868,11 @@ function showVersionImport(initialFile){
    }else{validateSpaceTasks(loaded);validateManifest(manifest);}
    const plans=await createPlans(86,92);await checkpoint();
    const nextTasks=currentProjectId?tasks.slice():[];const selected=currentProjectId?new Set(state.selected):new Set();let active=0;
-   for(const [planIndex,plan] of plans.entries()){await checkpoint();report(92+2*(planIndex+1)/plans.length,'应用片段 '+(planIndex+1)+' / '+plans.length);if(plan.unchanged){const updates=new Map(plan.snapshotUpdates.map(entry=>[entry.key,entry.englishTranslationAtExport]));for(const [entryIndex,entry] of nextTasks[plan.index].entries.entries()){if(entryIndex%256===0)await checkpoint();if(updates.has(entry.key))entry.englishTranslationAtExport=updates.get(entry.key);}active=plan.index;continue;}const index=plan.index<0?nextTasks.length:plan.index;nextTasks[index]=plan.merged;selected.add(index);active=index;}
+   for(const [planIndex,plan] of plans.entries()){await checkpoint();report(92+2*(planIndex+1)/plans.length,'应用片段 '+(planIndex+1)+' / '+plans.length);if(plan.unchanged){Object.assign(nextTasks[plan.index],plan.metadataUpdates);const updates=new Map(plan.snapshotUpdates.map(entry=>[entry.key,entry.englishTranslationAtExport]));for(const [entryIndex,entry] of nextTasks[plan.index].entries.entries()){if(entryIndex%256===0)await checkpoint();if(updates.has(entry.key))entry.englishTranslationAtExport=updates.get(entry.key);}active=plan.index;continue;}const index=plan.index<0?nextTasks.length:plan.index;nextTasks[index]=plan.merged;selected.add(index);active=index;}
    if(!currentProjectId)editingEntries.clear();else plans.forEach(plan=>{if(!plan.unchanged&&plan.previous)plan.previous.entries.forEach(entry=>editingEntries.delete(entry));});
    tasks.splice(0,tasks.length,...nextTasks);currentProjectId=manifest.projectId;currentManifest=structuredClone(manifest);currentPackageId=manifest.packageId;fileVersion={...manifest.fileVersion};
-   for(const partName of new Set(loaded.map(task=>task.partName))){delete previews[partName];if(Object.hasOwn(incomingPreviews,partName))previews[partName]=incomingPreviews[partName];}
+   for(const partName of new Set([...loaded.map(task=>task.partName),...Object.keys(incomingPreviews)])){delete previews[partName];if(Object.hasOwn(incomingPreviews,partName))previews[partName]=incomingPreviews[partName];}
+   for(const partName of Object.keys(previews))if(!tasks.some(task=>ownsPreview(task,partName,previews[partName])))delete previews[partName];
    state.active=active;state.selected=selected;state.filter='all';state.search='';state.cursor=-1;find('#loc-filter').value='all';find('#loc-search').value='';
    find('#loc-data-origin').textContent='已导入压缩包 · '+new Set(loaded.map(task=>task.partName)).size+' 个片段';
    await checkpoint();committing=true;cancel.disabled=true;find('#loc-close').disabled=true;progress.removeAttribute('value');progressText.textContent='正在原子保存，请稍候；此阶段不能取消。';await new Promise(resolve=>setTimeout(resolve,0));

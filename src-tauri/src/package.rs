@@ -14,6 +14,79 @@ const MAX_TASKS: usize = 1000;
 const MAX_ENTRIES: usize = 100_000;
 const MAX_SAFE_INTEGER: u64 = 9_007_199_254_740_991;
 const IDENTITY_FIELDS: [&str; 4] = ["projectId", "packageId", "fileVersion", "exportedAt"];
+const UNIT_FIELDS: [&str; 2] = ["unitKind", "chapterName"];
+
+pub(crate) fn unit_metadata(value: &Value) -> Result<Map<String, Value>, String> {
+    let mut metadata = Map::new();
+    for field in UNIT_FIELDS {
+        if let Some(item) = value.get(field) { metadata.insert(field.into(), item.clone()); }
+    }
+    if value.get("unitKind").is_some() && !matches!(value["unitKind"].as_str(), Some("chapter" | "part")) {
+        return Err("unitKind 必须是 chapter 或 part".into());
+    }
+    validate_optional_unit_name(value, "chapterName")?;
+    Ok(metadata)
+}
+
+pub(crate) fn validate_optional_unit_name(value: &Value, field: &str) -> Result<(), String> {
+    if let Some(name) = value.get(field).filter(|name| !name.is_null()) {
+        let name = name.as_str().ok_or_else(|| format!("{field} 必须是文本或空值"))?;
+        if !name.trim().is_empty() { part_asset_path(name)?; }
+    }
+    Ok(())
+}
+
+fn preview_parts(value: &Value) -> Result<Vec<&str>, String> {
+    let mut parts = Vec::new();
+    if let Some(names) = value.get("previewPartNames") {
+        let names = names.as_array().filter(|names| names.len() <= MAX_PARTS).ok_or("章节预览片段声明无效或超过 200 个")?;
+        if value["unitKind"] != "chapter" { return Err("只有章节可以声明 previewPartNames".into()); }
+        let mut paths = HashSet::new();
+        for name in names {
+            let name = name.as_str().ok_or("章节预览片段名必须是文本")?;
+            if !paths.insert(casefold(&part_asset_path(name)?))
+                || value["partName"].as_str().is_some_and(|unit| casefold(unit) == casefold(name)) {
+                return Err("章节预览片段重复或指向章节自身".into());
+            }
+            parts.push(name);
+        }
+    }
+    Ok(parts)
+}
+
+fn references_part(unit: &Value, part: &str) -> bool {
+    (unit["unitKind"] != "chapter" && unit["partName"] == part)
+        || (unit["unitKind"] == "chapter" && unit["previewPartNames"].as_array()
+            .is_some_and(|names| names.iter().any(|name| name == part)))
+}
+
+pub(crate) fn owns_preview(unit: &Value, part: &str, map: &Value) -> bool {
+    if unit["unitKind"] != "chapter" { return unit["partName"] == part; }
+    unit["partName"].as_str().is_some_and(|name| !name.trim().is_empty())
+        && map["chapterName"] == unit["partName"] && map["events"].as_array()
+        .is_some_and(|events| events.iter().any(|event| event["sourceUnit"] == unit["partName"]))
+}
+
+fn validate_media_owner(map: &Value, part: &str, assets: &[Value]) -> Result<(), String> {
+    let direct = assets.iter().find(|asset| asset["type"] == "localization-dialogues" && asset["partName"] == part);
+    if direct.is_some_and(|asset| asset["unitKind"] == "chapter") {
+        return Err("章节不是录制片段，不能拥有自己的视频".into());
+    }
+    let owners: Vec<_> = assets.iter().filter(|asset| asset["type"] == "localization-dialogues"
+        && asset["unitKind"] == "chapter" && references_part(asset, part)).collect();
+    if direct.is_none() && owners.is_empty() { return Err("媒体没有对应片段或章节声明".into()); }
+    if map.is_null() { return Ok(()); }
+    if let Some(chapter) = map.get("chapterName").and_then(Value::as_str).filter(|name| !name.trim().is_empty()) {
+        if direct.is_some_and(|asset| asset.get("chapterName").and_then(Value::as_str)
+            .is_some_and(|expected| !expected.trim().is_empty() && expected != chapter)) {
+            return Err("预览映射与声明的章节不一致".into());
+        }
+    }
+    if owners.iter().any(|owner| !owns_preview(owner, part, map)) {
+        return Err("章节声明的媒体缺少匹配 chapterName 和 sourceUnit 的真实事件".into());
+    }
+    Ok(())
+}
 
 struct ProgressReader<'a, R, F> { inner: &'a mut R, progress: &'a mut F }
 impl<R: Read, F: FnMut(usize) -> io::Result<()>> Read for ProgressReader<'_, R, F> {
@@ -133,6 +206,8 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport, progres
             return Err("不支持的片段资产类型".into());
         }
         let part_name = nonempty_text(asset, "partName")?;
+        let metadata = unit_metadata(asset)?;
+        preview_parts(asset)?;
         stage.parts.push(part_name.to_owned());
         if stage.parts.len() > MAX_PARTS { return Err("一次最多导入 200 个片段".into()); }
         let asset_path = part_asset_path(part_name)?;
@@ -184,13 +259,20 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport, progres
         }
         delivery = Some(current_delivery);
         validate_tasks(&data, Some(part_name), &mut counts)?;
+        for value in std::iter::once(&data).chain(data["tasks"].as_array().ok_or("对话任务无效")?) {
+            if unit_metadata(value)?.iter().any(|(field, value)|
+                metadata.get(field).and_then(Value::as_str).unwrap_or("") != value.as_str().unwrap_or("")) {
+                return Err("JSON 根、任务与清单的本地化单元元数据不一致".into());
+            }
+        }
         texts.insert(asset_path, Value::String(text));
     }
     if stage.parts.is_empty() { return Err("ZIP 缺少对话片段".into()); }
     let mut media_assets: HashMap<&str, (Option<&Value>, Option<&Value>)> = HashMap::new();
     for asset in assets.iter().filter(|asset| asset["type"] != "localization-dialogues") {
         let part = nonempty_text(asset, "partName")?;
-        if !stage.parts.iter().any(|name| name == part) { return Err("媒体没有对应对话片段".into()); }
+        part_asset_path(part)?;
+        validate_media_owner(&Value::Null, part, assets)?;
         let video = asset["type"] == "localization-preview-video";
         let suffix = if video { "video.mp4" } else { "dialogue-map.json" };
         let expected_path = format!("previews/{part}/{suffix}");
@@ -202,6 +284,11 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport, progres
         }
         let pair = media_assets.entry(part).or_default();
         if video { pair.0 = Some(asset); } else { pair.1 = Some(asset); }
+    }
+    for asset in assets.iter().filter(|asset| asset["type"] == "localization-dialogues") {
+        if preview_parts(asset)?.iter().any(|part| !media_assets.contains_key(part)) {
+            return Err("previewPartNames 只能声明本 ZIP 实际携带的配对媒体".into());
+        }
     }
     let media_count = media_assets.len().max(1);
     for (media_index, (part, (video_asset, map_asset))) in media_assets.into_iter().enumerate() {
@@ -219,11 +306,13 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport, progres
         }
         let map: Value = serde_json::from_slice(&map_bytes).map_err(|error| format!("媒体地图不是 UTF-8 JSON：{error}"))?;
         crate::media::validate_map(&map, &stage.project_id, part, recording, &hash)?;
+        validate_media_owner(&map, part, assets)?;
         let map_path = path.parent().ok_or("媒体目录无效")?.join("dialogue-map.json");
         let mut output = File::create(map_path).map_err(|error| error.to_string())?;
         output.write_all(&map_bytes).map_err(|error| error.to_string())?;
         output.sync_all().map_err(|error| error.to_string())?;
         stage.previews.insert(part.into(), json!({"recordingId":recording,"mediaId":identifier,"map":map}));
+        if !stage.parts.iter().any(|name| name == part) { stage.parts.push(part.into()); }
     }
     if !files.is_empty() || !videos.is_empty() { return Err("ZIP 文件与清单不一致，存在未声明的资产".into()); }
     Ok(json!({"manifest": manifest, "assets": texts, "mediaImportToken":stage.token,"previews":stage.previews}))
@@ -260,25 +349,37 @@ pub fn build_package(document: &Value, output: &mut File) -> Result<(), String> 
     let mut total = 0;
     let source = document.as_object().ok_or("无效的本地化交付格式")?;
     for (part_name, tasks) in groups {
+        let metadata = unit_metadata(tasks[0])?;
+        for task in &tasks {
+            if unit_metadata(task)? != metadata { return Err("同单元不同语言的章节元数据不一致".into()); }
+        }
         let path = part_asset_path(part_name)?;
         if !paths.insert(casefold(&path)) {
             return Err("片段文件名存在大小写冲突".into());
         }
         let mut data: Map<String, Value> = source
             .iter()
-            .filter(|(key, _)| !matches!(key.as_str(), "tasks" | "previews"))
+            .filter(|(key, _)| !matches!(key.as_str(), "tasks" | "previews" | "previewPartNames" | "unitKind" | "chapterName"))
             .map(|(key, value)| (key.clone(), value.clone()))
             .collect();
         data.insert(
             "tasks".into(),
-            Value::Array(tasks.into_iter().cloned().collect()),
+            Value::Array(tasks.into_iter().map(|task| {
+                let mut task = task.clone();
+                if let Some(object) = task.as_object_mut() { object.remove("previewPartNames"); }
+                task
+            }).collect()),
         );
+        data.extend(metadata.clone());
         let content = json_bytes(&Value::Object(data), MAX_FILE_BYTES.min(MAX_BYTES - total))?;
         total += content.len() as u64;
-        assets.push(json!({
+        let mut asset = json!({
             "id": part_name, "partName": part_name, "type": "localization-dialogues",
             "path": path, "sha256": sha256(&content)
-        }));
+        });
+        asset.as_object_mut().ok_or("对话资产无效")?.extend(metadata);
+        if asset["unitKind"] == "chapter" { asset["previewPartNames"] = json!([]); }
+        assets.push(asset);
         files.push((path, content));
     }
     manifest.insert("assets".into(), Value::Array(assets));
@@ -434,6 +535,7 @@ fn validate_tasks(
     for task in tasks {
         let part = nonempty_text(task, "partName")?;
         part_asset_path(part)?;
+        unit_metadata(task)?;
         let language = nonempty_text(task, "language")?;
         if expected_part.is_some_and(|expected| expected != part)
             || !counts.identities.insert((part.into(), language.into()))

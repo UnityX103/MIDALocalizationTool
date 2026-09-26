@@ -217,6 +217,7 @@ fn validate_snapshot(snapshot: &Value) -> Result<(), String> {
     }
     let mut entry_count = 0usize;
     for task in tasks {
+        crate::package::unit_metadata(task)?;
         let entries = task["entries"]
             .as_array()
             .ok_or("自动保存任务缺少词条列表")?;
