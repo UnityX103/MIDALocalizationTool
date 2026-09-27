@@ -7,7 +7,7 @@ const { webcrypto, createHash } = require('node:crypto');
 
 const root = path.resolve(__dirname, '..');
 const context = vm.createContext({ crypto: webcrypto, TextEncoder, structuredClone, console });
-for (const file of ['workspace-store.js', 'workload.js']) {
+for (const file of ['workspace-store.js', 'workload.js', 'translation-json.js']) {
   vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), context, { filename: file });
 }
 const work = context.LocalizationWorkload;
@@ -56,7 +56,7 @@ function receipt(delivery, ids = delivery.workload.records.map(record => record.
 // Run the editor's functions verbatim; only rendering and media UI are stubbed.
 function editorHarness(current, manifest, ledger) {
   const editor = vm.createContext({ crypto: webcrypto, TextEncoder, structuredClone, console });
-  for (const file of ['workspace-store.js', 'workload.js']) {
+  for (const file of ['workspace-store.js', 'workload.js', 'translation-json.js']) {
     vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), editor, { filename: file });
   }
   const html = fs.readFileSync(path.join(root, 'prototype.html'), 'utf8');
@@ -70,7 +70,7 @@ function editorHarness(current, manifest, ledger) {
     vm.runInContext(html.slice(begin, finish), editor, { filename: 'prototype.html' });
   }
   Object.assign(editor, {
-    tasks: [clone(current)], editingEntries: new Map(), pendingTaskSaves: new Map(),
+    tasks: [clone(current)], editingEntries: new Map(), importedTranslations: new Map(), pendingTaskSaves: new Map(),
     currentProjectId: manifest.projectId, currentManifest: clone(manifest),
     currentPackageId: manifest.packageId, fileVersion: clone(manifest.fileVersion),
     exportSequence: 0, workLedger: clone(ledger), savedWorkIds: new Set(),

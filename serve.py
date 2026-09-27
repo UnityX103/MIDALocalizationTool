@@ -196,7 +196,7 @@ class EditorHandler(BaseHTTPRequestHandler):
             self.reply(200, (ROOT / 'prototype.html').read_bytes(), 'text/html; charset=utf-8')
         elif path == '/app-icon.svg':
             self.reply(200, (ROOT / 'app-icon.svg').read_bytes(), 'image/svg+xml')
-        elif path in ('/workspace-store.js', '/workload.js', '/preview-player.js', '/import-worker.js'):
+        elif path in ('/workspace-store.js', '/workload.js', '/translation-json.js', '/preview-player.js', '/import-worker.js'):
             try:
                 self.reply(200, (ROOT / path[1:]).read_bytes(), 'text/javascript; charset=utf-8')
             except FileNotFoundError:

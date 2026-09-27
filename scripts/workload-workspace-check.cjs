@@ -6,7 +6,7 @@ const { webcrypto } = require('node:crypto');
 
 const root = path.resolve(__dirname, '..');
 const context = vm.createContext({ crypto: webcrypto, TextEncoder, structuredClone, console });
-for (const file of ['workspace-store.js', 'workload.js']) {
+for (const file of ['workspace-store.js', 'workload.js', 'translation-json.js']) {
   vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), context, { filename: file });
 }
 const html = fs.readFileSync(path.join(root, 'prototype.html'), 'utf8');
