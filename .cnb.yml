@@ -14,7 +14,9 @@ $:
   api_trigger: *mirror
   issue.open:
     # BEGIN cnb-feedback managed hook
-    - docker:
+    - git:
+        enable: false
+      docker:
         image: python:3.12-alpine
       imports:
         - "https://cnb.cool/nanzhaigame-xpy/minigame-preview-deploy-secrets/-/blob/main/feedback-all.yml"
@@ -69,7 +71,9 @@ $:
     # END cnb-feedback managed hook
   issue.reopen:
     # BEGIN cnb-feedback managed hook
-    - docker:
+    - git:
+        enable: false
+      docker:
         image: python:3.12-alpine
       imports:
         - "https://cnb.cool/nanzhaigame-xpy/minigame-preview-deploy-secrets/-/blob/main/feedback-all.yml"
@@ -124,7 +128,9 @@ $:
     # END cnb-feedback managed hook
   issue.close:
     # BEGIN cnb-feedback managed hook
-    - docker:
+    - git:
+        enable: false
+      docker:
         image: python:3.12-alpine
       imports:
         - "https://cnb.cool/nanzhaigame-xpy/minigame-preview-deploy-secrets/-/blob/main/feedback-all.yml"
@@ -179,7 +185,9 @@ $:
     # END cnb-feedback managed hook
   issue.update:
     # BEGIN cnb-feedback managed hook
-    - docker:
+    - git:
+        enable: false
+      docker:
         image: python:3.12-alpine
       imports:
         - "https://cnb.cool/nanzhaigame-xpy/minigame-preview-deploy-secrets/-/blob/main/feedback-all.yml"
