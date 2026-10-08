@@ -2,8 +2,24 @@ use serde_json::{json, Value};
 use std::io::{Read, Write};
 use std::path::Path;
 use tauri_plugin_dialog::DialogExt;
+use tauri_plugin_clipboard_manager::ClipboardExt;
 
 const MAX_BYTES: usize = 32 * 1024 * 1024;
+
+fn validate_export(text: &str) -> Result<(), String> {
+    if text.len() > MAX_BYTES { return Err("原文 JSON 超过 32 MiB，请减少勾选任务".into()); }
+    let document: Value = serde_json::from_str(text).map_err(|_| "原文 JSON 无效")?;
+    if document["format"] != "mida-localization-translations" || document["formatVersion"] != 1 {
+        return Err("原文 JSON 格式无效".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
+pub fn copy_translation_json(app: tauri::AppHandle, text: String) -> Result<(), String> {
+    validate_export(&text)?;
+    app.clipboard().write_text(text).map_err(|error| format!("复制失败：{error}"))
+}
 
 fn validate_path(path: &Path) -> Result<(), String> {
     if !path.extension().and_then(|extension| extension.to_str())
@@ -48,11 +64,7 @@ pub async fn choose_translation_directory(app: tauri::AppHandle) -> Result<Optio
 #[tauri::command]
 pub async fn export_translation_json(text: String, file_name: String, directory: String) -> Result<Option<Value>, String> {
     tauri::async_runtime::spawn_blocking(move || {
-        if text.len() > MAX_BYTES { return Err("原文 JSON 超过 32 MiB，请减少勾选任务".into()); }
-        let document: Value = serde_json::from_str(&text).map_err(|_| "原文 JSON 无效")?;
-        if document["format"] != "mida-localization-translations" || document["formatVersion"] != 1 {
-            return Err("原文 JSON 格式无效".into());
-        }
+        validate_export(&text)?;
         let safe_name = if file_name.len() <= 160 && file_name.ends_with(".json")
             && file_name.bytes().all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte)) {
             file_name

@@ -12,7 +12,10 @@ globalThis.LocalizationTranslationJson = (() => {
  const key=(task,entry)=>JSON.stringify([task.partName,task.language,entry.key]);
  const same=(left,right)=>LocalizationWorkload.canonical(left)===LocalizationWorkload.canonical(right);
  const validContext=value=>value&&typeof value==='object'&&!Array.isArray(value)&&Object.values(value).every(item=>item===null||['string','boolean','number'].includes(typeof item));
- function createDocument(projectId,fileVersion,tasks,includeTranslated=false){
+ function aiDescription(language){
+  return `这是 MIDA 本地化编辑器的翻译交换 JSON。请把每条 currentSource 中文原文翻译成目标语言 ${language}，将结果填写到对应的 translation 字段中。\n只填写或修改 translation，保留 description、所有身份、版本、来源、context 字段及 tasks / entries 结构，不增加、删除或重排词条。speakerKey、speakerChineseName 和 context 供理解发言人与语境，不要翻译这些字段。\ntranslation: null 表示尚未填写，请改为译文字符串，例如 "translation": "Translated text"；已有字符串可校对。无法翻译时保留 null。只有词条 context.allowEmpty 为 true 时才允许空字符串。保留原文中的占位符、标签及换行含义，并正确转义 JSON 字符串。\n返回完整、可解析的纯 JSON，不要使用 Markdown 代码围栏，也不要在 JSON 前后添加解释文字。`;
+ }
+ function createDocument(projectId,fileVersion,tasks,includeTranslated=false,description=aiDescription(tasks[0]?.language||'')){
   const selected=tasks.map(task=>({
    partName:task.partName,language:task.language,taskVersion:task.taskVersion,context:context(task,taskFields),
    entries:task.entries.filter(entry=>includeTranslated||entry.review.state!=='confirmed').map(entry=>({
@@ -21,7 +24,7 @@ globalThis.LocalizationTranslationJson = (() => {
    }))
   })).filter(task=>task.entries.length);
   requireValue(selected.length,'当前导出范围没有词条。');
-  return {format,formatVersion:1,projectId,lineageId:fileVersion.lineageId,language:selected[0].language,
+  return {description,format,formatVersion:1,projectId,lineageId:fileVersion.lineageId,language:selected[0].language,
    exportedAt:new Date().toISOString(),tasks:selected};
  }
  function validateRow(row){
@@ -97,5 +100,5 @@ globalThis.LocalizationTranslationJson = (() => {
   const byTask=new Map(tasks.map(task=>[taskKey(task),{task,entries:new Map(task.entries.map(entry=>[entry.key,entry]))}]));
   return candidates.filter(candidate=>{const current=byTask.get(taskKey(candidate)),entry=current?.entries.get(candidate.key);return entry&&available(candidate,current.task,entry);});
  }
- return {maxBytes,key,createDocument,parse,planImport,available,validateCandidates,prune};
+ return {maxBytes,key,aiDescription,createDocument,parse,planImport,available,validateCandidates,prune};
 })();

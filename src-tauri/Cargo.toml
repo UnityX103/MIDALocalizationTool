@@ -1,6 +1,6 @@
 [package]
 name = "mida-localization"
-version = "1.0.8"
+version = "1.0.9"
 edition = "2021"
 description = "MIDA 本地化翻译编辑器"
 
@@ -10,6 +10,7 @@ tauri-build = { version = "=2.6.3", features = [] }
 [dependencies]
 tauri = { version = "=2.11.6", features = [] }
 tauri-plugin-dialog = "=2.7.2"
+tauri-plugin-clipboard-manager = "=2.3.3"
 tauri-plugin-single-instance = "=2.4.4"
 tauri-plugin-updater = "=2.11.0"
 reqwest = { version = "0.13", default-features = false, features = ["json", "rustls"] }

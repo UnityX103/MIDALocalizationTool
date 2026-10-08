@@ -95,6 +95,8 @@ body{padding:12px}
 #mida-loc-app .workload-fields{margin:14px 0}
 #mida-loc-app .workload-fields dt{font-family:ui-monospace,monospace;overflow-wrap:anywhere;font-size:12px;margin-top:12px}
 #mida-loc-app .workload-fields dd{margin:4px 0;font-size:13px;line-height:1.7}
+#mida-loc-app .dialog textarea.ai-description{height:160px;min-height:100px;font:inherit;white-space:pre-wrap}
+#mida-loc-app .dialog textarea.translation-paste{height:220px;min-height:120px}
 #mida-loc-app .translation-json-actions{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:7px;margin-top:12px}
 #mida-loc-app .translation-json-actions button{width:100%;min-width:0;min-height:32px;padding:6px 4px;white-space:normal}
 #mida-loc-app .imported-status{color:#f1ce84}
@@ -121,7 +123,7 @@ body{padding:12px}
       <div class="taskhead"><h3>翻译任务<span id="loc-unsaved" hidden role="status" aria-label="有未保存的修改" title="有未保存的修改">*</span></h3><div class="space-controls"><select id="loc-space" aria-label="当前语言空间" disabled><option value="">拖入 ZIP 后自动创建</option></select></div></div>
       <label class="taskfilter" for="loc-task-filter">片段筛选<select id="loc-task-filter" disabled><option value="all">全部显示</option><option value="pending">仅未修复</option><option value="imported">待校验</option></select></label>
       <div class="tasklist" id="loc-tasks"></div>
-      <div class="taskfoot"><label class="checklabel"><input type="checkbox" id="loc-all" disabled>全选交付任务</label><div id="loc-selection" style="margin-top:7px"></div><div class="translation-json-actions"><button id="loc-json-export" title="导出用于 AI 大模型翻译" disabled>导出原文</button><button id="loc-json-import" title="将翻译完成的 JSON 译文导入进来" disabled>导入译文</button></div><input id="loc-json-file" type="file" accept=".json,application/json" hidden></div>
+      <div class="taskfoot"><label class="checklabel"><input type="checkbox" id="loc-all" disabled>全选交付任务</label><div id="loc-selection" style="margin-top:7px"></div><div class="translation-json-actions"><button id="loc-json-export" title="导出用于 AI 大模型翻译" disabled>导出</button><button id="loc-json-import" title="将翻译完成的 JSON 译文导入进来" disabled>导入</button></div></div>
     </aside>
     <main class="editor" aria-label="逐句编辑器">
       <div class="editorhead"><div><div class="headline"><button class="flat" id="loc-collapse" aria-label="收起任务菜单">☰</button><h2 id="loc-title">尚未导入本地化数据</h2><span class="badge" id="loc-task-version" hidden></span></div><div class="muted" id="loc-count"></div></div></div>
@@ -710,10 +712,12 @@ function selectImportedSnapshot(snapshot){
 function focusImportedEntry(){
  entryPageTarget=state.cursor;renderEntries();const control=find('#loc-use-imported-'+state.cursor);control?.focus({preventScroll:true});control?.scrollIntoView({block:'nearest'});
 }
-async function importTranslationJson(file=null){
+async function importTranslationJson(file=null,pastedText=null){
+ let imported=false;
  const success=await runTranslationJson('导入候选译文',async()=>{
   let source;
-  if(nativeApp)source=await invokeNative('choose_translation_json');
+  if(pastedText!==null)source={fileName:'粘贴的译文 JSON',text:pastedText};
+  else if(nativeApp)source=await invokeNative('choose_translation_json');
   else{
    requireValue(file&&/\.json$/i.test(file.name),'请选择一个 .json 文件。');
    requireValue(file.size<=LocalizationTranslationJson.maxBytes,'文件超过 32 MiB 上限。');
@@ -732,16 +736,43 @@ async function importTranslationJson(file=null){
   const first=candidates[0];snapshot.state.active=snapshot.tasks.findIndex(task=>task.partName===first.partName&&task.language===first.language);
   selectImportedSnapshot(snapshot);
   const record=await saveTranslationSnapshot(snapshot,'导入译文 JSON');
+  imported=true;
   setNotice('已保存 '+summary+'尚未采用，未增加翻译字数。'+(record.mediaWarning||''));
  });
- if(success)focusImportedEntry();
+ if(success&&imported){closeDialog();focusImportedEntry();}
+ return success&&imported;
+}
+function openTranslationImport(){
+ if(!canUseTranslationJson())return;
+ const content=openDialog('导入译文'),modes=element('div','jsonactions'),paste=element('button','primary','直接粘贴'),file=element('button','','选择文件');
+ modes.setAttribute('aria-label','导入方式');modes.append(paste,file);
+ const pastePanel=element('div'),label=element('label','helper','粘贴 AI 返回的完整 JSON'),input=element('textarea','translation-paste');
+ input.id='loc-json-paste';input.placeholder='在这里粘贴译文 JSON，只填写或修改 translation 字段。';input.spellcheck=false;label.htmlFor=input.id;pastePanel.append(label,input);
+ const filePanel=element('div'),choose=element('button','','选择 JSON 文件'),picker=element('input');
+ picker.type='file';picker.accept='.json,application/json';picker.hidden=true;filePanel.append(element('p','helper','选择 AI 填写完成的 .json 文件。'),choose,picker);
+ const error=element('p','helper');error.setAttribute('role','status');
+ const actions=element('div','dialogbottom'),cancel=element('button','','取消'),confirm=element('button','primary','导入粘贴内容');
+ actions.append(cancel,confirm);content.append(element('p','helper','导入后保存为待校验译文，确认采用后才替换当前译文。支持本工具导出的 JSON，上限 32 MiB。'),modes,pastePanel,filePanel,error,actions);
+ let disposed=false;dialogCleanup=()=>{disposed=true;};
+ const selectMode=isPaste=>{pastePanel.hidden=!isPaste;filePanel.hidden=isPaste;confirm.hidden=!isPaste;paste.classList.toggle('primary',isPaste);file.classList.toggle('primary',!isPaste);paste.setAttribute('aria-pressed',String(isPaste));file.setAttribute('aria-pressed',String(!isPaste));error.textContent='';if(isPaste)input.focus();};
+ const load=async(selectedFile=null,text=null)=>{if(disposed)return;error.textContent='';const imported=await importTranslationJson(selectedFile,text);if(!disposed&&!imported)error.textContent=find('#loc-notice').textContent;};
+ paste.addEventListener('click',()=>selectMode(true));file.addEventListener('click',()=>selectMode(false));
+ input.addEventListener('input',()=>{confirm.disabled=!input.value.trim();});confirm.disabled=true;
+ confirm.addEventListener('click',()=>load(null,input.value));cancel.addEventListener('click',closeDialog);
+ choose.addEventListener('click',()=>{if(nativeApp)load();else{picker.value='';picker.click();}});
+ picker.addEventListener('change',()=>{if(picker.files[0])load(picker.files[0]);});
+ selectMode(true);
 }
 function openTranslationExport(){
  if(!canUseTranslationJson())return;
  const selected=[...state.selected].map(index=>tasks[index]).filter(Boolean);
  const total=selected.reduce((count,task)=>count+task.entries.length,0);
  const pendingCount=selected.reduce((count,task)=>count+task.entries.filter(entry=>entry.review.state!=='confirmed').length,0);
- const content=openDialog('导出原文'),line=element('label','dialogline'),toggle=element('input','setting-switch');
+ const content=openDialog('导出原文'),descriptionLabel=element('label','helper','给 AI 的说明（会放在 JSON 最前面的 description 字段，可补充翻译要求）'),description=element('textarea','ai-description');
+ description.id='loc-json-description';descriptionLabel.htmlFor=description.id;description.value=LocalizationTranslationJson.aiDescription(selected[0]?.language||'');
+ const modes=element('div','jsonactions'),clipboard=element('button','primary','导出到剪贴板'),file=element('button','','导出文件');
+ modes.setAttribute('aria-label','导出方式');modes.append(clipboard,file);
+ const line=element('label','dialogline'),toggle=element('input','setting-switch');
  toggle.type='checkbox';toggle.id='loc-export-translated';toggle.setAttribute('role','switch');
  line.append(element('span','','导出已翻译的内容'),toggle);
  const count=element('p','helper');
@@ -751,11 +782,17 @@ function openTranslationExport(){
  const label=element('p','label','导出目标目录'),error=element('p','helper');
  error.setAttribute('role','status');
  const actions=element('div','dialogbottom'),cancel=element('button','','取消'),confirm=element('button','primary','确认导出');
- confirm.id='loc-json-export-confirm';actions.append(cancel,confirm);content.append(line,count,label,destination,error,actions);
- let directory=null,picking=false,disposed=false;
+ confirm.id='loc-json-export-confirm';actions.append(cancel,confirm);content.append(descriptionLabel,description,line,count,modes,label,destination,error,actions);
+ let directory=null,picking=false,disposed=false,exportMode='clipboard';
  const browserDownload=!nativeApp&&typeof window.showDirectoryPicker!=='function';
- if(browserDownload){path.textContent='浏览器下载目录';choose.disabled=true;choose.title='当前浏览器不支持选择目录，请在浏览器下载设置中更改保存位置。';error.textContent=choose.title;}
- const refresh=()=>{const amount=toggle.checked?total:pendingCount;count.textContent=`未翻译 ${pendingCount} 条 · 已翻译 ${total-pendingCount} 条 · 本次导出 ${amount} 条`;confirm.disabled=picking||!amount||(!browserDownload&&!directory);};
+ if(browserDownload){path.textContent='浏览器下载目录';choose.disabled=true;choose.title='当前浏览器不支持选择目录，请在浏览器下载设置中更改保存位置。';}
+ const refresh=()=>{
+  const amount=toggle.checked?total:pendingCount,isFile=exportMode==='file';count.textContent=`未翻译 ${pendingCount} 条 · 已翻译 ${total-pendingCount} 条 · 本次导出 ${amount} 条`;
+  label.hidden=destination.hidden=!isFile;clipboard.classList.toggle('primary',!isFile);file.classList.toggle('primary',isFile);clipboard.setAttribute('aria-pressed',String(!isFile));file.setAttribute('aria-pressed',String(isFile));
+  clipboard.disabled=file.disabled=picking;confirm.textContent=isFile?'确认导出文件':'复制到剪贴板';confirm.disabled=picking||!amount||(isFile&&!browserDownload&&!directory);
+ };
+ clipboard.addEventListener('click',()=>{exportMode='clipboard';error.textContent='';refresh();});
+ file.addEventListener('click',()=>{exportMode='file';error.textContent=browserDownload?choose.title:'';refresh();});
  dialogCleanup=()=>{disposed=true;};
  toggle.addEventListener('change',refresh);cancel.addEventListener('click',closeDialog);
  choose.addEventListener('click',async()=>{
@@ -769,20 +806,26 @@ function openTranslationExport(){
  });
  confirm.addEventListener('click',async()=>{
   if(confirm.disabled)return;
-  const includeTranslated=toggle.checked;
-  closeDialog();
-  await exportTranslationJson(includeTranslated,directory);
+  const success=await exportTranslationJson(toggle.checked,directory,exportMode,description.value);
+  if(success)closeDialog();else if(!disposed)error.textContent=find('#loc-notice').textContent;
  });
  refresh();
 }
-async function exportTranslationJson(includeTranslated=false,directory=null){
- await runTranslationJson('导出中文原文',async()=>{
+async function exportTranslationJson(includeTranslated=false,directory=null,mode='file',description=undefined){
+ return runTranslationJson('导出中文原文',async()=>{
   const selected=[...state.selected].sort((left,right)=>left-right).map(index=>tasks[index]);
-  const data=LocalizationTranslationJson.createDocument(currentProjectId,fileVersion,selected,includeTranslated);
+  const data=LocalizationTranslationJson.createDocument(currentProjectId,fileVersion,selected,includeTranslated,description);
   const text=JSON.stringify(data,null,2)+'\n';
   requireValue(new TextEncoder().encode(text).byteLength<=LocalizationTranslationJson.maxBytes,'导出超过 32 MiB，请减少勾选任务。');
   const fileName=(includeTranslated?'translations.':'untranslated.')+data.language+'.'+Date.now()+'.json';
-  if(nativeApp){
+  if(mode==='clipboard'){
+   if(nativeApp)await invokeNative('copy_translation_json',{text});
+   else{
+    requireValue(navigator.clipboard?.writeText,'当前浏览器无法访问剪贴板，请使用导出文件。');
+    try{await navigator.clipboard.writeText(text);}catch{throw new Error('无法写入剪贴板，请允许浏览器访问剪贴板，或使用导出文件。');}
+   }
+   setNotice('已复制 '+data.tasks.reduce((total,task)=>total+task.entries.length,0)+' 条原文及 AI 说明，可直接粘贴给 AI 翻译。');
+  }else if(nativeApp){
    const result=await invokeNative('export_translation_json',{text,fileName,directory});
    setNotice(result?'原文 JSON 已导出：'+result.path:'已取消导出，已有内容保持不变。');
   }else if(directory){
@@ -816,11 +859,7 @@ async function confirmImportedTranslation(task,entry){
  if(success)focusImportedEntry();
 }
 find('#loc-json-export').addEventListener('click',openTranslationExport);
-find('#loc-json-import').addEventListener('click',()=>{
- if(!canUseTranslationJson())return;
- if(nativeApp)importTranslationJson();else{find('#loc-json-file').value='';find('#loc-json-file').click();}
-});
-find('#loc-json-file').addEventListener('change',event=>{const file=event.target.files[0];if(file)importTranslationJson(file);});
+find('#loc-json-import').addEventListener('click',openTranslationImport);
 async function packet(mode){
  requireValue(tasks.length&&currentProjectId&&fileVersion&&state.selected.size,'请先导入 ZIP 并勾选交付任务。');
  const document={format:'mida-localization',formatVersion:1,projectId:currentProjectId,parentPackageId:currentPackageId,fileVersion:{...fileVersion,revision:Math.max(exportSequence,fileVersion.revision)},deliveryState:mode,tasks:[...state.selected].sort((left,right)=>left-right).map(index=>structuredClone(tasks[index]))};
