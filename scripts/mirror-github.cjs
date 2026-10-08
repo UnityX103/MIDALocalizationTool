@@ -7,6 +7,7 @@ const root = path.resolve(__dirname, '..');
 const upstream = 'https://github.com/UnityX103/MIDALocalizationTool.git';
 const githubApi = 'https://api.github.com/repos/UnityX103/MIDALocalizationTool';
 const cnbApi = 'https://api.cnb.cool/nanzhaigame-xpy/MIDALocalizationTool/-/releases';
+const releasePage = Symbol('official-release-page');
 const git = args => execFileSync('git', args, { cwd: root, encoding: 'utf8' }).trim();
 const hash = bytes => crypto.createHash('sha256').update(bytes).digest('hex');
 
@@ -15,8 +16,38 @@ async function json(url, method = 'GET', body) {
   if (url.startsWith(cnbApi)) { headers.Authorization = `Bearer ${process.env.CNB_TOKEN}`; headers['Content-Type'] = 'application/json'; }
   const response = await fetch(url, { method, headers, body: body === undefined ? undefined : JSON.stringify(body), redirect: 'error', signal: AbortSignal.timeout(60000) });
   if (response.status === 404 && method === 'GET') return null;
-  if (!response.ok) throw new Error(`镜像 API 请求失败：${new URL(url).hostname} HTTP ${response.status}`);
+  if (!response.ok) {
+    const error = new Error(`镜像 API 请求失败：${new URL(url).hostname} HTTP ${response.status}`);
+    error.httpStatus = response.status;
+    throw error;
+  }
   return response.json();
+}
+
+async function latestGithubRelease() {
+  try { return await json(`${githubApi}/releases/latest`); }
+  catch (error) {
+    const status = error.httpStatus;
+    const unavailable = status ? status === 403 || status === 429 || status >= 500
+      : error instanceof TypeError || ['AbortError', 'TimeoutError'].includes(error.name);
+    if (!unavailable) throw error;
+    console.log('GitHub API 暂不可用，从官方 Release 页面确认最新正式版。');
+    const response = await fetch('https://github.com/UnityX103/MIDALocalizationTool/releases/latest',
+      { method: 'HEAD', redirect: 'follow', signal: AbortSignal.timeout(60000) });
+    if (!response.ok) throw new Error(`官方 Release 页面不可用：HTTP ${response.status}`);
+    const url = new URL(response.url);
+    const match = url.pathname.match(/^\/UnityX103\/MIDALocalizationTool\/releases\/tag\/(v\d+\.\d+\.\d+)$/);
+    if (url.origin !== 'https://github.com' || !match || url.search || url.hash
+      || url.username || url.password) throw new Error('官方最新 Release 地址无效');
+    const tag = match[1], version = tag.slice(1);
+    git(['fetch', '--no-tags', upstream, `refs/tags/${tag}`]);
+    const commit = git(['rev-parse', 'FETCH_HEAD^{commit}']);
+    git(['merge-base', '--is-ancestor', commit, 'refs/remotes/github/main']);
+    if (JSON.parse(git(['show', `${commit}:package.json`])).version !== version) throw new Error('正式版标签与源码版本不一致');
+    return { tag_name: tag, name: `MIDA 本地化编辑器 ${version}`,
+      body: git(['show', `${commit}:docs/release-${version}.md`]), draft: false, prerelease: false,
+      [releasePage]: true };
+  }
 }
 
 async function main() {
@@ -26,7 +57,7 @@ async function main() {
   git([...args, upstream, 'main:refs/remotes/github/main']);
   git(['push', 'origin', 'refs/remotes/github/main:refs/heads/main']);
   console.log('GitHub main 已快进同步；未强制覆盖 CNB 历史。');
-  const release = await json(`${githubApi}/releases/latest`);
+  const release = await latestGithubRelease();
   if (!release) { console.log('GitHub 暂无正式版本，保留现有 CNB 更新包。'); return; }
   if (release.draft || release.prerelease || !/^v\d+\.\d+\.\d+$/.test(release.tag_name)) throw new Error('不支持的上游版本');
   const version = release.tag_name.slice(1);
@@ -39,14 +70,31 @@ async function main() {
   fs.mkdirSync(parent, { recursive: true });
   const directory = fs.mkdtempSync(path.join(parent, 'github-mirror-'));
   async function download(name) {
-    const asset = release.assets.find(asset => asset.name === name);
-    if (!asset || asset.size <= 0 || asset.size > 512 * 1024 * 1024) throw new Error(`缺少或过大的上游附件：${name}`);
-    const url = new URL(asset.browser_download_url);
+    const limit = name === 'SHA256SUMS' || /\.(json|sig)$/.test(name) ? 4 * 1024 * 1024 : 512 * 1024 * 1024;
+    let expectedSize = null, address;
+    if (release[releasePage]) address = `https://github.com/UnityX103/MIDALocalizationTool/releases/download/${release.tag_name}/${encodeURIComponent(name)}`;
+    else {
+      const asset = Array.isArray(release.assets) && release.assets.find(asset => asset.name === name);
+      if (!asset || !Number.isSafeInteger(asset.size) || asset.size <= 0 || asset.size > limit) throw new Error(`缺少或过大的上游附件：${name}`);
+      expectedSize = asset.size; address = asset.browser_download_url;
+    }
+    const url = new URL(address);
     if (url.origin !== 'https://github.com' || !url.pathname.startsWith(`/UnityX103/MIDALocalizationTool/releases/download/${release.tag_name}/`)) throw new Error('上游下载地址不属于指定版本');
     const response = await fetch(url, { signal: AbortSignal.timeout(600000) });
     if (!response.ok) throw new Error(`下载失败：${name} HTTP ${response.status}`);
-    const bytes = Buffer.from(await response.arrayBuffer());
-    if (bytes.length !== asset.size) throw new Error(`附件大小不符：${name}`);
+    const header = response.headers.get('content-length');
+    const headerSize = header === null ? null : Number(header);
+    if (header !== null && (!/^\d+$/.test(header) || !Number.isSafeInteger(headerSize) || headerSize <= 0 || headerSize > limit)) throw new Error(`附件声明大小无效：${name}`);
+    const encoding = response.headers.get('content-encoding');
+    const declaredSize = !encoding || encoding === 'identity' ? headerSize : null;
+    const chunks = []; let length = 0;
+    if (!response.body) throw new Error(`附件缺少内容：${name}`);
+    for await (const chunk of response.body) {
+      if (chunk.byteLength > limit - length) throw new Error(`附件超过接收上限：${name}`);
+      chunks.push(chunk); length += chunk.byteLength;
+    }
+    if (!length || (expectedSize !== null && length !== expectedSize) || (declaredSize !== null && length !== declaredSize)) throw new Error(`附件大小不符：${name}`);
+    const bytes = Buffer.concat(chunks, length);
     fs.writeFileSync(path.join(directory, name), bytes);
     return bytes;
   }
