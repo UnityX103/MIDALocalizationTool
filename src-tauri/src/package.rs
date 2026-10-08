@@ -192,6 +192,9 @@ pub fn read_package(path: &Path, stage: &mut crate::media::StagedImport, progres
         return Err("需要纯数据 v2 或含媒体 v3 清单，请重新导出 ZIP".into());
     }
     validate_metadata(&manifest)?;
+    if manifest["projectId"] == "mida-editor-tutorial-v1" || manifest["tutorialOnly"] == true {
+        return Err("教程包只能在独立教程空间使用，不能导入真实工作区".into());
+    }
     let assets = nonempty_array(&manifest, "assets", MAX_PARTS * 3)?;
     let version = manifest["formatVersion"].as_u64().ok_or("清单版本无效")?;
     stage.project_id = nonempty_text(&manifest, "projectId")?.to_owned();

@@ -122,7 +122,7 @@ class EditorHandler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
-        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; media-src 'self' blob:; img-src 'self' data: blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'")
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
@@ -263,7 +263,9 @@ class EditorHandler(BaseHTTPRequestHandler):
             self.reply(200, (ROOT / 'prototype.html').read_bytes(), 'text/html; charset=utf-8')
         elif path == '/app-icon.svg':
             self.reply(200, (ROOT / 'app-icon.svg').read_bytes(), 'image/svg+xml')
-        elif path in ('/diagnostics.js', '/feedback.js', '/workspace-store.js', '/workload.js', '/translation-json.js', '/preview-player.js', '/import-worker.js'):
+        elif path == '/tutorial.css':
+            self.reply(200, (ROOT / 'tutorial.css').read_bytes(), 'text/css; charset=utf-8')
+        elif path in ('/tutorial.js', '/tutorial-media.js', '/diagnostics.js', '/feedback.js', '/workspace-store.js', '/workload.js', '/translation-json.js', '/preview-player.js', '/import-worker.js'):
             try:
                 self.reply(200, (ROOT / path[1:]).read_bytes(), 'text/javascript; charset=utf-8')
             except FileNotFoundError:

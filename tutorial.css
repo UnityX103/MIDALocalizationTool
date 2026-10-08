@@ -1,0 +1,26 @@
+#mida-tutorial-focus{position:fixed;inset:0;z-index:13;pointer-events:none}
+#mida-tutorial-focus svg{position:absolute;inset:0;pointer-events:none}
+.tutorial-focus-ring{position:absolute;border:3px solid #b4f6a9;border-radius:10px;box-sizing:border-box;box-shadow:0 0 0 4px #b4f6a932,0 0 24px #92f5b14d}
+#mida-tutorial-panel{position:fixed;width:330px;max-width:calc(100vw - 24px);max-height:calc(100vh - 24px);z-index:14;box-sizing:border-box;padding:18px;background:#f3f8f6;border:1px solid #a4bfb6;border-radius:12px;box-shadow:0 12px 40px #0006;color:#183a37;font:18px/1.65 'PingFang SC','Noto Sans SC','Microsoft YaHei',system-ui,sans-serif;overflow:auto}
+#mida-tutorial-panel *{box-sizing:border-box}
+#mida-tutorial-panel p,#mida-tutorial-panel h2{margin:0}
+#mida-tutorial-panel h2{font-size:21px;line-height:1.45;margin:6px 0 10px}
+#mida-tutorial-panel .tutorial-kicker{font-size:14px;color:#37645e}
+#mida-tutorial-panel .tutorial-controls{margin-top:16px;display:flex;flex-wrap:wrap;gap:8px}
+#mida-tutorial-panel button{font:inherit;font-size:15px;line-height:1.5;color:inherit;background:white;border:1px solid #9ab8ad;border-radius:7px;padding:7px 10px;cursor:pointer}
+#mida-tutorial-panel button.primary{background:#12685b;color:white;border-color:#12685b}
+#mida-tutorial-panel button:disabled{opacity:.45;cursor:default}
+#mida-tutorial-panel button:focus-visible{outline:3px solid #137e68;outline-offset:3px}
+#mida-tutorial-panel .tutorial-actions{display:flex;gap:8px;margin-top:14px}
+#mida-loc-app .tutorial-banner{padding:10px 16px;background:#163f40;color:#d2f8e6;display:flex;justify-content:space-between;align-items:center;gap:12px;border-bottom:1px solid #5a887b;font-size:15px}
+#mida-loc-app .tutorial-banner button{background:#234b4c;color:#d2f8e6}
+#mida-loc-app .tutorial-highlight{outline:3px solid #b2e4a3!important;outline-offset:-3px}
+#mida-loc-app .preview-targets{display:flex;flex-wrap:wrap;gap:8px;padding:8px 12px;background:var(--loc-pane);border-bottom:1px solid var(--loc-line)}
+#mida-loc-app .preview-targets button{white-space:normal;text-align:left;min-height:42px}
+#mida-loc-app .preview-targets button[aria-pressed=true]{border-color:var(--loc-green);color:var(--loc-green)}
+#mida-loc-app .tutorial-welcome{font-size:18px;line-height:1.75}
+#mida-loc-app .tutorial-welcome h3{font-size:25px;margin-bottom:12px}
+#mida-loc-app .tutorial-welcome p{margin-bottom:14px}
+#mida-loc-app .tutorial-welcome .dialogbottom{margin-top:22px}
+[hidden]{display:none!important}
+@media(max-width:600px){#mida-tutorial-panel{width:300px;padding:15px;font-size:17px}#mida-loc-app .tutorial-banner{flex-wrap:wrap}#mida-tutorial-panel h2{font-size:20px}}

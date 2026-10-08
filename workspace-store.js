@@ -20,13 +20,16 @@ class LocalizationWorkspaceStore {
   return language==='en'?entry.translationAtExport:'';
  }
  static isLegacyDemo(snapshot){return Boolean(snapshot)&&(typeof snapshot.currentProjectId!=='string'||!snapshot.currentProjectId.trim()||snapshot.fileVersion?.lineageId==='demo-task-package'||snapshot.currentPackageId==='demo-import-v1');}
- constructor(){this.recoveryToken=null;this.database=null;this.revision=0;this.pendingMediaImport=null;this.pendingMediaTerminal=false;this.spaceId='';this.cacheEpoch=0;}
+ constructor(options={}){this.tutorial=options.tutorial===true;this.recoveryToken=null;this.database=null;this.revision=0;this.pendingMediaImport=null;this.pendingMediaTerminal=false;this.spaceId='';this.cacheEpoch=0;}
+ get native(){return Boolean(globalThis.__TAURI__)&&!this.tutorial;}
  static validSpace(value){return typeof value==='string'&&/^[a-z][a-z0-9_-]{0,31}$/.test(value);}
  storageKey(key){return this.spaceId&&key!=='cache-generation'?'space:'+this.spaceId+':'+key:key;}
  async clearAll(){
-  if(globalThis.__TAURI__){await MidaDiagnostics.invoke('clear_all_cache',{confirmed:true});return;}
+  if(this.native){await MidaDiagnostics.invoke('clear_all_cache',{confirmed:true});return;}
+  if(!this.tutorial){
   const response=await fetch('/api/cache/clear',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({confirmed:true})});
   const result=await response.json();if(!response.ok)throw new Error(result.error||'视频缓存清理失败');
+  }
   await this.open();
   await new Promise((resolve,reject)=>{
    const transaction=this.database.transaction(['workspace','backups'],'readwrite');const workspace=transaction.objectStore('workspace');const generation=workspace.get('cache-generation');
@@ -35,7 +38,8 @@ class LocalizationWorkspaceStore {
   });
  }
  async spaces(){
-  if(globalThis.__TAURI__)return MidaDiagnostics.invoke('workspace_spaces');
+  if(this.tutorial)return [];
+  if(this.native)return MidaDiagnostics.invoke('workspace_spaces');
   await this.open();return new Promise((resolve,reject)=>{const transaction=this.database.transaction('workspace','readonly');const request=transaction.objectStore('workspace').getAllKeys();transaction.oncomplete=()=>resolve(request.result.filter(key=>typeof key==='string'&&/^space:[a-z][a-z0-9_-]{0,31}:current$/.test(key)).map(key=>key.split(':')[1]));transaction.onabort=()=>reject(transaction.error);});
  }
  static mediaClient(){
@@ -44,12 +48,14 @@ class LocalizationWorkspaceStore {
   this._mediaClient=id;return id;
  }
  async reconcileMedia(){
-  if(globalThis.__TAURI__)return;
+  if(this.tutorial)return;
+  if(this.native)return;
   await this.open();const records=await new Promise((resolve,reject)=>{const tx=this.database.transaction('workspace','readonly'),ws=tx.objectStore('workspace'),keys=ws.getAllKeys();const records=[];keys.onsuccess=()=>{for(const key of keys.result)if(typeof key==='string'&&(key==='current'||key.endsWith(':current')||key.includes('recovery:'))){const request=ws.get(key);request.onsuccess=()=>records.push({key,record:request.result});}};tx.oncomplete=()=>resolve(records);tx.onabort=()=>reject(tx.error);});
   const spaces=new Map([['',[]]]);for(const {key,record} of records){const space=key.startsWith('space:')?key.split(':')[1]:'';if(!spaces.has(space))spaces.set(space,[]);const token=record?.snapshot?.mediaImportPending?.token;if(token)spaces.get(space).push(token);}
   for(const [space,tokens] of spaces){const store=new LocalizationWorkspaceStore();store.spaceId=space;await store.mediaRequest('reconcile',{owner:LocalizationWorkspaceStore.mediaClient(),tokens:[...new Set(tokens)]});}
  }
  async mediaRequest(action,payload){
+  if(this.tutorial)throw new Error('教程媒体与真实媒体缓存独立');
   const response=await fetch('/api/media/'+action,{method:'POST',headers:{'Content-Type':'application/json','X-Localization-Space':this.spaceId},body:JSON.stringify(payload),signal:AbortSignal.timeout(30000)});
   const result=await response.json();if(!response.ok){const error=new Error(result.error||'预览视频处理失败');error.status=response.status;throw error;}if(result.url&&this.spaceId)result.url+='?space='+encodeURIComponent(this.spaceId);return result;
  }
@@ -62,7 +68,7 @@ class LocalizationWorkspaceStore {
  async open(){
   if(this.database)return;
   this.database=await new Promise((resolve,reject)=>{
-   const request=indexedDB.open('mida-localization-editor-workspace',1);
+   const request=indexedDB.open(this.tutorial?'mida-localization-editor-tutorial':'mida-localization-editor-workspace',1);
    request.onupgradeneeded=()=>{request.result.createObjectStore('workspace');request.result.createObjectStore('backups');};
    request.onerror=()=>reject(request.error);
    request.onblocked=()=>reject(new Error('本地存储被其他页面占用，请关闭其他编辑器页面后重试'));
@@ -71,7 +77,7 @@ class LocalizationWorkspaceStore {
   this.database.onversionchange=()=>{this.database.close();this.database=null;};
  }
  async read(store,key){
-  if(globalThis.__TAURI__)return MidaDiagnostics.invoke('workspace_read',{store,key,spaceId:this.spaceId}).catch(error=>{throw new Error(String(error));});
+  if(this.native)return MidaDiagnostics.invoke('workspace_read',{store,key,spaceId:this.spaceId}).catch(error=>{throw new Error(String(error));});
   await this.open();
   return new Promise((resolve,reject)=>{
    const transaction=this.database.transaction(store,'readonly');
@@ -97,7 +103,7 @@ class LocalizationWorkspaceStore {
  }
  async saveEntry(task,taskIndex,projectId,entry,view,ledgerDelta){
   if(this.spaceId&&task.language!==this.spaceId)throw new Error('片段语言不匹配');
-  if(globalThis.__TAURI__){const result=await MidaDiagnostics.invoke('workspace_save_entry',{task,taskIndex,projectId,entry,view,ledgerDelta,expectedRevision:this.revision,spaceId:this.spaceId,expectedCacheEpoch:this.cacheEpoch}).catch(error=>{throw new Error(String(error));});this.revision=result.revision;return result;}
+  if(this.native){const result=await MidaDiagnostics.invoke('workspace_save_entry',{task,taskIndex,projectId,entry,view,ledgerDelta,expectedRevision:this.revision,spaceId:this.spaceId,expectedCacheEpoch:this.cacheEpoch}).catch(error=>{throw new Error(String(error));});this.revision=result.revision;return result;}
   await this.open();const expectedRevision=this.revision;
   const result=await new Promise((resolve,reject)=>{
    let tx;try{tx=this.database.transaction('workspace','readwrite',{durability:'strict'});}catch{tx=this.database.transaction('workspace','readwrite');}const ws=tx.objectStore('workspace'),current=ws.get(this.storageKey('current')),generation=ws.get('cache-generation'),protectedRefs=ws.get(this.storageKey('task-backup-refs'));let reads=0,failure,result;
@@ -120,7 +126,7 @@ class LocalizationWorkspaceStore {
  async saveTask(task,taskIndex,projectId,view,confirmedKeys){
   if(this.spaceId&&task.language!==this.spaceId)throw new Error('片段目标语言不匹配');
   for(const entry of task.entries)LocalizationWorkspaceStore.readEnglishSnapshot(entry,task.language);
-  if(globalThis.__TAURI__){
+  if(this.native){
    const result=await MidaDiagnostics.invoke('workspace_save_task',{task,taskIndex,projectId,view,confirmedKeys,expectedRevision:this.revision,spaceId:this.spaceId,expectedCacheEpoch:this.cacheEpoch}).catch(error=>{throw new Error(String(error));});
    this.revision=result.revision;return result;
   }
@@ -152,34 +158,35 @@ class LocalizationWorkspaceStore {
   });
   this.revision=result.revision;return result;
  }
- async load(){let mediaWarning=null;if(!globalThis.__TAURI__)try{await this.reconcileMedia();}catch(error){mediaWarning='媒体暂存核对未完成：'+error.message;}this.cacheEpoch=globalThis.__TAURI__?await MidaDiagnostics.invoke('workspace_cache_epoch'):(await this.read('workspace','cache-generation'))||0;const record=await this.expandRecord(await this.read('workspace','current'));if(record&&(!Number.isSafeInteger(record.revision)||record.revision<1))throw new Error('存档保存版本无效，请从备份恢复');await this.loadArchives(record?.snapshot);this.revision=record?.revision||0;this.pendingMediaImport=null;this.pendingMediaTerminal=false;if(LocalizationWorkspaceStore.isLegacyDemo(record?.snapshot))return null;if(record&&mediaWarning)record.mediaWarning=mediaWarning;if(!globalThis.__TAURI__&&record){this.pendingMediaImport=record.snapshot.mediaImportPending||null;return this.finishMediaImport(record);}return record;}
+ async load(){let mediaWarning=null;if(!this.native)try{await this.reconcileMedia();}catch(error){mediaWarning='媒体暂存核对未完成：'+error.message;}this.cacheEpoch=this.native?await MidaDiagnostics.invoke('workspace_cache_epoch'):(await this.read('workspace','cache-generation'))||0;const record=await this.expandRecord(await this.read('workspace','current'));if(record&&(!Number.isSafeInteger(record.revision)||record.revision<1))throw new Error('存档保存版本无效，请从备份恢复');await this.loadArchives(record?.snapshot);this.revision=record?.revision||0;this.pendingMediaImport=null;this.pendingMediaTerminal=false;if(LocalizationWorkspaceStore.isLegacyDemo(record?.snapshot))return null;if(record&&this.tutorial!==Boolean(record.snapshot.currentProjectId==='mida-editor-tutorial-v1'))throw new Error('教程包与真实工作空间不能混用');if(record&&mediaWarning)record.mediaWarning=mediaWarning;if(!this.native&&record){this.pendingMediaImport=record.snapshot.mediaImportPending||null;return this.finishMediaImport(record);}return record;}
  async history(){
-  if(globalThis.__TAURI__)return this.read('workspace','history');
+  if(this.native)return this.read('workspace','history');
   await this.open();const keys=await new Promise((resolve,reject)=>{const tx=this.database.transaction('backups','readonly'),request=tx.objectStore('backups').getAllKeys();tx.oncomplete=()=>resolve(request.result);tx.onabort=()=>reject(tx.error);});
   const prefix=this.storageKey('');const summaries=await Promise.all(keys.filter(key=>typeof key==='string'&&key.startsWith(prefix)&&!key.slice(prefix.length).includes(':')).map(async key=>{
    const id=key.slice(prefix.length);try{const record=await this.backup(id);if(!record)return null;return {id,savedAt:record.savedAt,reason:record.reason||'本机备份',taskCount:record.snapshot.tasks.length};}catch(error){return {id,savedAt:0,reason:'不可用备份',taskCount:0,unavailable:error.message};}
   }));return summaries.filter(Boolean).sort((a,b)=>b.savedAt-a.savedAt);
  }
  async archiveLedger(archive){
-  if(globalThis.__TAURI__)return MidaDiagnostics.invoke('workspace_archive_ledger',{archive,spaceId:this.spaceId,expectedRevision:this.revision,expectedCacheEpoch:this.cacheEpoch});
+  if(this.native)return MidaDiagnostics.invoke('workspace_archive_ledger',{archive,spaceId:this.spaceId,expectedRevision:this.revision,expectedCacheEpoch:this.cacheEpoch});
   await this.open();const compact=structuredClone(archive),blobs=[];for(const packet of compact.packets){const split=this.splitSnapshot(packet);blobs.push(...split.blobs);Object.assign(packet,split.compact);delete packet.tasks;delete packet.workload.records;}
   await new Promise((resolve,reject)=>{const tx=this.database.transaction('workspace','readwrite'),ws=tx.objectStore('workspace'),request=ws.get(this.storageKey('current')),generation=ws.get('cache-generation'),archiveRefs=ws.get(this.storageKey('task-archive-refs')),backupRefs=ws.get(this.storageKey('task-backup-refs'));let reads=0,failure;const write=()=>{if(++reads!==4)return;try{if(request.result?.revision!==this.revision||(generation.result||0)!==this.cacheEpoch)throw new Error('存档已更改，归档未提交');for(const {blob,task} of blobs)ws.put(task,this.storageKey('task:'+blob));ws.put(compact,this.storageKey('ledger:'+archive.id));const refs=[...new Set([...(archiveRefs.result||[]),...blobs.map(item=>item.blob)])];ws.put(refs,this.storageKey('task-archive-refs'));ws.put(backupRefs.result===null?null:[...new Set([...(backupRefs.result||[]),...refs])],this.storageKey('task-backup-refs'));}catch(error){failure=error;tx.abort();}};request.onsuccess=write;generation.onsuccess=write;archiveRefs.onsuccess=write;backupRefs.onsuccess=write;tx.oncomplete=resolve;tx.onabort=()=>reject(failure||tx.error);});
  }
  async readArchive(id,ledgerOnly=false){
-  const archive=globalThis.__TAURI__?await MidaDiagnostics.invoke('workspace_read',{store:ledgerOnly?'ledger-index':'ledgers',key:id,spaceId:this.spaceId}):await this.read('workspace','ledger:'+id);
+  const archive=this.native?await MidaDiagnostics.invoke('workspace_read',{store:ledgerOnly?'ledger-index':'ledgers',key:id,spaceId:this.spaceId}):await this.read('workspace','ledger:'+id);
   if(!archive)throw new Error('归档文件缺失：'+id);if(ledgerOnly){delete archive.packets;return LocalizationWorkload.registerArchive(archive);}LocalizationWorkload.registerArchive(archive);for(const packet of archive.packets){if(packet.taskRefs){const record=await this.expandRecord({snapshot:packet});Object.assign(packet,record.snapshot);}const delivery=archive.ledger.deliveries.find(value=>value.id===packet.delivery.id);if(!delivery)throw new Error('归档交付缺失');const byId=new Map(archive.ledger.records.map(record=>[record.id,record]));packet.workload.records=delivery.recordIds.map(id=>byId.get(id));}
   return archive;
  }
  async loadArchives(snapshot){for(const item of snapshot?.workLedger?.archives||[])await this.readArchive(item.id,true);}
  async recoveryInfo(){
-  this.cacheEpoch=globalThis.__TAURI__?await MidaDiagnostics.invoke('workspace_cache_epoch'):(await this.read('workspace','cache-generation'))||0;
-  if(globalThis.__TAURI__){const info=await MidaDiagnostics.invoke('workspace_recovery',{spaceId:this.spaceId});this.recoveryToken=info.token;return info;}
+  this.cacheEpoch=this.native?await MidaDiagnostics.invoke('workspace_cache_epoch'):(await this.read('workspace','cache-generation'))||0;
+  if(this.native){const info=await MidaDiagnostics.invoke('workspace_recovery',{spaceId:this.spaceId});this.recoveryToken=info.token;return info;}
   const current=await this.read('workspace','current');this.recoveryToken=JSON.stringify(current??null);let expanded=null;try{expanded=await this.expandRecord(structuredClone(current));}catch{}
   return {current:expanded||current,history:await this.history()};
  }
  async recover(snapshot,extraSnapshots=[]){
+  if(this.tutorial!==Boolean(snapshot.currentProjectId==='mida-editor-tutorial-v1'))throw new Error('教程包与真实工作空间不能混用');
   LocalizationWorkspaceStore.validateCapacity(snapshot);
-  if(globalThis.__TAURI__){const record=await MidaDiagnostics.invoke('workspace_recover',{snapshot,token:this.recoveryToken,spaceId:this.spaceId,expectedCacheEpoch:this.cacheEpoch});this.revision=record.revision;this.cacheEpoch=record.cacheEpoch;return record;}
+  if(this.native){const record=await MidaDiagnostics.invoke('workspace_recover',{snapshot,token:this.recoveryToken,spaceId:this.spaceId,expectedCacheEpoch:this.cacheEpoch});this.revision=record.revision;this.cacheEpoch=record.cacheEpoch;return record;}
   await this.open();const snapshots=[snapshot,...extraSnapshots];snapshots.forEach(LocalizationWorkspaceStore.validateCapacity);const splits=snapshots.map(value=>this.splitSnapshot(value));
   const result=await new Promise((resolve,reject)=>{
    let tx;try{tx=this.database.transaction(['workspace','backups'],'readwrite',{durability:'strict'});}catch{tx=this.database.transaction(['workspace','backups'],'readwrite');}
@@ -203,11 +210,12 @@ class LocalizationWorkspaceStore {
 
  async backup(id){const record=await this.expandRecord(await this.read('backups',id));await this.loadArchives(record?.snapshot);return LocalizationWorkspaceStore.isLegacyDemo(record?.snapshot)?null:record;}
  async save(snapshot,backupReason=null,mediaImportToken=null){
+  if(this.tutorial!==Boolean(snapshot.currentProjectId==='mida-editor-tutorial-v1'))throw new Error('教程包与真实工作空间不能混用');
   LocalizationWorkspaceStore.validateCapacity(snapshot);
   for(const task of snapshot.tasks)for(const entry of task.entries)LocalizationWorkspaceStore.readEnglishSnapshot(entry,task.language);
   if(LocalizationWorkspaceStore.isLegacyDemo(snapshot))throw new Error('请先导入 Unity 导出的 ZIP，空白或旧示例工作区不会保存');
   const languages=new Set(snapshot.tasks.map(task=>task.language));if(languages.size!==1||(this.spaceId&&![...languages].every(language=>language===this.spaceId)))throw new Error('当前空间只允许保存一种匹配的目标语言');
-  if(globalThis.__TAURI__){const result=await MidaDiagnostics.invoke('workspace_save',{snapshot,expectedRevision:this.revision,backupReason,mediaImportToken,spaceId:this.spaceId,expectedCacheEpoch:this.cacheEpoch}).catch(error=>{throw new Error(String(error));});this.revision=result.revision;const warnings=[result.mediaCleanupWarning,result.mediaStagingWarning].filter(Boolean);if(warnings.length)result.mediaWarning='数据已保存，媒体清理尚未全部完成：'+warnings.join('；');return result;}
+  if(this.native){const result=await MidaDiagnostics.invoke('workspace_save',{snapshot,expectedRevision:this.revision,backupReason,mediaImportToken,spaceId:this.spaceId,expectedCacheEpoch:this.cacheEpoch}).catch(error=>{throw new Error(String(error));});this.revision=result.revision;const warnings=[result.mediaCleanupWarning,result.mediaStagingWarning].filter(Boolean);if(warnings.length)result.mediaWarning='数据已保存，媒体清理尚未全部完成：'+warnings.join('；');return result;}
   if(this.pendingMediaImport&&mediaImportToken&&this.pendingMediaImport.token!==mediaImportToken){const retry=await this.finishMediaImport({});if(retry.mediaWarning&&!this.pendingMediaTerminal)throw new Error(retry.mediaWarning);if(this.pendingMediaTerminal){await this.mediaRequest('discard',{token:this.pendingMediaImport.token}).catch(()=>{});this.pendingMediaImport=null;this.pendingMediaTerminal=false;}}
   const pendingImport=mediaImportToken?{token:mediaImportToken,projectId:snapshot.currentProjectId}:this.pendingMediaImport;
   snapshot=structuredClone(snapshot);if(pendingImport)snapshot.mediaImportPending=pendingImport;else delete snapshot.mediaImportPending;

@@ -237,6 +237,8 @@ def validate_manifest(manifest):
     if (not isinstance(manifest, dict) or manifest.get('format') != 'mida-localization-manifest'
             or type(manifest.get('formatVersion')) is not int or manifest['formatVersion'] not in (2, 3)):
         raise ValueError('需要逐片段文件的 v2 或 v3 清单')
+    if manifest.get('projectId') == 'mida-editor-tutorial-v1' or manifest.get('tutorialOnly') is True:
+        raise ValueError('教程包只能在独立教程空间使用，不能导入真实工作区')
     version = manifest.get('fileVersion')
     if (not valid_text(manifest.get('projectId')) or not valid_text(manifest.get('packageId'))
             or not valid_text(manifest.get('exportedAt')) or not isinstance(version, dict)

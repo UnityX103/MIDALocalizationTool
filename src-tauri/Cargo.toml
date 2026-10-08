@@ -1,6 +1,6 @@
 [package]
 name = "mida-localization"
-version = "1.0.10"
+version = "1.0.11"
 edition = "2021"
 description = "MIDA 本地化翻译编辑器"
 
