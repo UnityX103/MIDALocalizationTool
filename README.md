@@ -137,3 +137,7 @@ Windows 安装程序未进行 Authenticode 签名，尚未在真实 Windows 环�
 | `docs/package-format.md` | 与 Unity 的数据边界 |
 
 依赖由 `package-lock.json` 和 `src-tauri/Cargo.lock` 锁定；`node_modules/`、`dist/`、`target/`、用户数据和安装产物不提交。
+
+## 问题反馈与诊断
+
+侧栏“问题反馈”支持免登录提交到本项目的 CNB 仓库，文字与可选截图之外，默认附送自动准备的本次运行日志，可预览或取消。偏好中的“日志与诊断”可查看、导出日志；桌面和浏览器后端均记录操作、耗时与异常，按容量轮转保留。反馈及附件公开，客户端不包含 CNB 写入凭据。详见 [反馈与运行日志](docs/feedback-and-diagnostics.md)。

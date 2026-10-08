@@ -32,7 +32,8 @@ async fn fetch_releases(client: &reqwest::Client) -> Result<Vec<Value>, String> 
 }
 
 #[tauri::command]
-pub async fn repository_history() -> Result<Value, String> {
+pub async fn repository_history(operation_id: Option<String>) -> Result<Value, String> {
+    crate::diagnostics::logged("repository_history", operation_id, async {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(20))
         .user_agent("MIDA-Localization-About").build().map_err(|error| error.to_string())?;
     let mut releases: Vec<Value> = fetch_releases(&client).await?;
@@ -46,6 +47,8 @@ pub async fn repository_history() -> Result<Value, String> {
         "publishedAt": release["published_at"], "notes": release["body"]
     })).collect();
     Ok(json!({"repository": REPOSITORY, "releases": history}))
+
+    }).await
 }
 
 #[derive(Default)]
@@ -64,7 +67,8 @@ fn release_url(value: &str) -> Result<reqwest::Url, String> {
 }
 
 #[tauri::command]
-pub async fn check_app_update(app: tauri::AppHandle) -> Result<Value, String> {
+pub async fn check_app_update(app: tauri::AppHandle, operation_id: Option<String>) -> Result<Value, String> {
+    crate::diagnostics::logged("check_app_update", operation_id, async {
     let current = app.package_info().version.clone();
     if cfg!(debug_assertions) { return Ok(json!({"available":false,"current":current.to_string(),"development":true})); }
     let state = app.state::<UpdateState>();
@@ -100,10 +104,13 @@ pub async fn check_app_update(app: tauri::AppHandle) -> Result<Value, String> {
         *state.pending.lock().map_err(|error| error.to_string())? = Some(update);
         Ok(info)
     } else { Ok(json!({"available":false,"current":current.to_string()})) }
+
+    }).await
 }
 
 #[tauri::command]
-pub async fn install_app_update(app: tauri::AppHandle) -> Result<(), String> {
+pub async fn install_app_update(app: tauri::AppHandle, operation_id: Option<String>) -> Result<(), String> {
+    crate::diagnostics::logged("install_app_update", operation_id, async {
     if cfg!(debug_assertions) { return Err("开发版不执行应用更新".into()); }
     let state = app.state::<UpdateState>();
     if state.installing.swap(true, Ordering::SeqCst) { return Err("更新已在进行中".into()); }
@@ -122,4 +129,6 @@ pub async fn install_app_update(app: tauri::AppHandle) -> Result<(), String> {
     }.await;
     state.installing.store(false, Ordering::SeqCst);
     result
+
+    }).await
 }

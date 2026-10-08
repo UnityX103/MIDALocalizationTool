@@ -7,6 +7,8 @@ mod media;
 mod updater;
 mod import_progress;
 mod translation_json;
+mod diagnostics;
+mod feedback;
 
 use serde_json::{json, Value};
 use std::collections::HashMap;
@@ -46,7 +48,8 @@ fn valid_space(value: &str) -> bool {
 }
 
 #[tauri::command]
-async fn workspace_spaces(app: tauri::AppHandle) -> Result<Vec<String>, String> {
+async fn workspace_spaces(app: tauri::AppHandle, operation_id: Option<String>) -> Result<Vec<String>, String> {
+    crate::diagnostics::logged("workspace_spaces", operation_id, async {
     let directory = space_root(&app, None)?.join("spaces");
     media::safe_path(&directory)?;
     if !directory.exists() { return Ok(Vec::new()); }
@@ -58,6 +61,8 @@ async fn workspace_spaces(app: tauri::AppHandle) -> Result<Vec<String>, String> 
     }
     spaces.sort();
     Ok(spaces)
+
+    }).await
 }
 
 fn read_selected(app: &tauri::AppHandle, path: PathBuf, space_id: Option<&str>, job: &import_progress::ImportProgress) -> Result<Value, String> {
@@ -80,7 +85,8 @@ fn read_selected(app: &tauri::AppHandle, path: PathBuf, space_id: Option<&str>, 
 }
 
 #[tauri::command]
-async fn begin_package_import(app: tauri::AppHandle) -> Result<String, String> {
+async fn begin_package_import(app: tauri::AppHandle, operation_id: Option<String>) -> Result<String, String> {
+    crate::diagnostics::logged("begin_package_import", operation_id, async {
     let state = app.state::<NativeState>();
     let mut active = state.import_job.lock().map_err(|error| error.to_string())?;
     if active.is_some() { return Err("另一个导入正在进行".into()); }
@@ -88,14 +94,19 @@ async fn begin_package_import(app: tauri::AppHandle) -> Result<String, String> {
     let id = job.id.clone();
     *active = Some(job);
     Ok(id)
+
+    }).await
 }
 
 #[tauri::command]
-async fn cancel_package_import(app: tauri::AppHandle, request_id: String) -> Result<(), String> {
+async fn cancel_package_import(app: tauri::AppHandle, request_id: String, operation_id: Option<String>) -> Result<(), String> {
+    crate::diagnostics::logged("cancel_package_import", operation_id, async {
     let state = app.state::<NativeState>();
     let active = state.import_job.lock().map_err(|error| error.to_string())?;
     if let Some(job) = active.as_ref().filter(|job| job.id == request_id) { job.cancel(); }
     Ok(())
+
+    }).await
 }
 
 async fn run_package_import(app: tauri::AppHandle, space_id: Option<String>, request_id: String, pick: bool) -> Result<Option<Value>, String> {
@@ -123,17 +134,24 @@ async fn run_package_import(app: tauri::AppHandle, space_id: Option<String>, req
 }
 
 #[tauri::command]
-async fn choose_package(app: tauri::AppHandle, space_id: Option<String>, request_id: String) -> Result<Option<Value>, String> {
+async fn choose_package(app: tauri::AppHandle, space_id: Option<String>, request_id: String, operation_id: Option<String>) -> Result<Option<Value>, String> {
+    crate::diagnostics::logged("choose_package", operation_id, async {
     run_package_import(app, space_id, request_id, true).await
+
+    }).await
 }
 
 #[tauri::command]
-async fn import_dropped_package(app: tauri::AppHandle, space_id: Option<String>, request_id: String) -> Result<Value, String> {
+async fn import_dropped_package(app: tauri::AppHandle, space_id: Option<String>, request_id: String, operation_id: Option<String>) -> Result<Value, String> {
+    crate::diagnostics::logged("import_dropped_package", operation_id, async {
     run_package_import(app, space_id, request_id, false).await?.ok_or("没有待导入的文件".into())
+
+    }).await
 }
 
 #[tauri::command]
-async fn export_package(app: tauri::AppHandle, document: Value, allow_unresolved: Option<bool>) -> Result<Option<Value>, String> {
+async fn export_package(app: tauri::AppHandle, document: Value, allow_unresolved: Option<bool>, operation_id: Option<String>) -> Result<Option<Value>, String> {
+    crate::diagnostics::logged("export_package", operation_id, async {
     if document["deliveryState"] == "draft" && allow_unresolved != Some(true) { return Err("请先确认是否忽略待处理问题并导出".into()); }
     package::selected_parts(&document)?;
     let package_id = document["packageId"].as_str().ok_or("缺少包标识")?;
@@ -153,6 +171,8 @@ async fn export_package(app: tauri::AppHandle, document: Value, allow_unresolved
     temporary.as_file().sync_all().map_err(|error| error.to_string())?;
     temporary.persist(&path).map_err(|error| error.to_string())?;
     Ok(Some(json!({ "path": path.to_string_lossy() })))
+
+    }).await
 }
 
 #[tauri::command]
@@ -163,22 +183,27 @@ async fn confirm_action(app: tauri::AppHandle, message: String) -> bool {
 
 #[tauri::command]
 fn finish_exit(app: tauri::AppHandle) {
+    diagnostics::event("runtime.exit", "INFO", None, None);
     app.state::<NativeState>().allow_exit.store(true, Ordering::SeqCst);
     app.exit(0);
 }
 
 #[tauri::command]
-async fn workspace_read(app: tauri::AppHandle, store: String, key: String, space_id: Option<String>) -> Result<Value, String> {
+async fn workspace_read(app: tauri::AppHandle, store: String, key: String, space_id: Option<String>, operation_id: Option<String>) -> Result<Value, String> {
+    crate::diagnostics::logged("workspace_read", operation_id, async {
     tauri::async_runtime::spawn_blocking(move || {
     let state = app.state::<NativeState>();
     let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
     let root = space_root(&app, space_id.as_deref())?;
     workspace::read(&root, &store, &key)
     }).await.map_err(|error| error.to_string())?
+
+    }).await
 }
 
 #[tauri::command]
-async fn workspace_save(app: tauri::AppHandle, mut snapshot: Value, expected_revision: u64, backup_reason: Option<String>, media_import_token: Option<String>, space_id: Option<String>, expected_cache_epoch: Option<u64>) -> Result<Value, String> {
+async fn workspace_save(app: tauri::AppHandle, mut snapshot: Value, expected_revision: u64, backup_reason: Option<String>, media_import_token: Option<String>, space_id: Option<String>, expected_cache_epoch: Option<u64>, operation_id: Option<String>) -> Result<Value, String> {
+    crate::diagnostics::logged("workspace_save", operation_id, async {
     tauri::async_runtime::spawn_blocking(move || {
     let state = app.state::<NativeState>();
     let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
@@ -214,20 +239,26 @@ async fn workspace_save(app: tauri::AppHandle, mut snapshot: Value, expected_rev
         Ok(result)
     }
     }).await.map_err(|error| error.to_string())?
+
+    }).await
 }
 
 #[tauri::command]
-async fn workspace_save_entry(app: tauri::AppHandle, task: Value, task_index: usize, project_id: String, entry: Value, view: Value, ledger_delta: Value, expected_revision: u64, space_id: Option<String>, expected_cache_epoch: u64) -> Result<Value, String> {
+async fn workspace_save_entry(app: tauri::AppHandle, task: Value, task_index: usize, project_id: String, entry: Value, view: Value, ledger_delta: Value, expected_revision: u64, space_id: Option<String>, expected_cache_epoch: u64, operation_id: Option<String>) -> Result<Value, String> {
+    crate::diagnostics::logged("workspace_save_entry", operation_id, async {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<NativeState>();let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
         if expected_cache_epoch != state.cache_epoch.load(Ordering::SeqCst) { return Err("缓存状态已改变".into()); }
         if space_id.as_deref().filter(|value| !value.is_empty()).is_some_and(|value| task["language"] != value) { return Err("片段语言不匹配".into()); }
         workspace::save_entry(&space_root(&app, space_id.as_deref())?, task, task_index, &project_id, entry, view, ledger_delta, expected_revision)
     }).await.map_err(|error| error.to_string())?
+
+    }).await
 }
 
 #[tauri::command]
-async fn workspace_save_task(app: tauri::AppHandle, task: Value, task_index: usize, project_id: String, view: Value, confirmed_keys: Vec<String>, expected_revision: u64, space_id: Option<String>, expected_cache_epoch: u64) -> Result<Value, String> {
+async fn workspace_save_task(app: tauri::AppHandle, task: Value, task_index: usize, project_id: String, view: Value, confirmed_keys: Vec<String>, expected_revision: u64, space_id: Option<String>, expected_cache_epoch: u64, operation_id: Option<String>) -> Result<Value, String> {
+    crate::diagnostics::logged("workspace_save_task", operation_id, async {
     tauri::async_runtime::spawn_blocking(move || {
     let state = app.state::<NativeState>();
     let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
@@ -236,29 +267,38 @@ async fn workspace_save_task(app: tauri::AppHandle, task: Value, task_index: usi
     let root = space_root(&app, space_id.as_deref())?;
     workspace::save_task(&root, task, task_index, &project_id, view, confirmed_keys, expected_revision)
     }).await.map_err(|error| error.to_string())?
+
+    }).await
 }
 
 
 #[tauri::command]
-async fn workspace_archive_ledger(app: tauri::AppHandle, archive: Value, space_id: Option<String>, expected_revision: u64, expected_cache_epoch: u64) -> Result<(), String> {
+async fn workspace_archive_ledger(app: tauri::AppHandle, archive: Value, space_id: Option<String>, expected_revision: u64, expected_cache_epoch: u64, operation_id: Option<String>) -> Result<(), String> {
+    crate::diagnostics::logged("workspace_archive_ledger", operation_id, async {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<NativeState>();let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
         if expected_cache_epoch != state.cache_epoch.load(Ordering::SeqCst) { return Err("缓存状态已改变".into()); }
         workspace::archive_ledger(&space_root(&app, space_id.as_deref())?, archive, expected_revision)
     }).await.map_err(|error| error.to_string())?
+
+    }).await
 }
 
 #[tauri::command]
-async fn workspace_recovery(app: tauri::AppHandle, space_id: Option<String>) -> Result<Value, String> {
+async fn workspace_recovery(app: tauri::AppHandle, space_id: Option<String>, operation_id: Option<String>) -> Result<Value, String> {
+    crate::diagnostics::logged("workspace_recovery", operation_id, async {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<NativeState>();
         let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
         workspace::recovery_info(&space_root(&app, space_id.as_deref())?)
     }).await.map_err(|error| error.to_string())?
+
+    }).await
 }
 
 #[tauri::command]
-async fn workspace_recover(app: tauri::AppHandle, snapshot: Value, token: String, space_id: Option<String>, expected_cache_epoch: u64) -> Result<Value, String> {
+async fn workspace_recover(app: tauri::AppHandle, snapshot: Value, token: String, space_id: Option<String>, expected_cache_epoch: u64, operation_id: Option<String>) -> Result<Value, String> {
+    crate::diagnostics::logged("workspace_recover", operation_id, async {
     tauri::async_runtime::spawn_blocking(move || {
         let state = app.state::<NativeState>();
         let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
@@ -267,6 +307,8 @@ async fn workspace_recover(app: tauri::AppHandle, snapshot: Value, token: String
         let mut record = workspace::recover(&space_root(&app, space_id.as_deref())?, snapshot, &token)?;
         record["cacheEpoch"] = json!(state.cache_epoch.fetch_add(1, Ordering::SeqCst) + 1);Ok(record)
     }).await.map_err(|error| error.to_string())?
+
+    }).await
 }
 
 #[tauri::command]
@@ -275,7 +317,8 @@ fn workspace_cache_epoch(app: tauri::AppHandle) -> u64 {
 }
 
 #[tauri::command]
-async fn clear_all_cache(app: tauri::AppHandle, confirmed: bool) -> Result<(), String> {
+async fn clear_all_cache(app: tauri::AppHandle, confirmed: bool, operation_id: Option<String>) -> Result<(), String> {
+    crate::diagnostics::logged("clear_all_cache", operation_id, async {
     if !confirmed { return Err("清空操作尚未确认".into()); }
     let state = app.state::<NativeState>();
     let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
@@ -288,10 +331,13 @@ async fn clear_all_cache(app: tauri::AppHandle, confirmed: bool) -> Result<(), S
     for name in ["workspace", "spaces", "media"] { media::remove_tree(&root.join(name))?; }
     media::initialize(&root)?;
     Ok(())
+
+    }).await
 }
 
 #[tauri::command]
-async fn relocate_media_import(app: tauri::AppHandle, token: String, space_id: String) -> Result<(), String> {
+async fn relocate_media_import(app: tauri::AppHandle, token: String, space_id: String, operation_id: Option<String>) -> Result<(), String> {
+    crate::diagnostics::logged("relocate_media_import", operation_id, async {
     let state = app.state::<NativeState>();
     let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
     let mut pending = state.media_import.lock().map_err(|error| error.to_string())?;
@@ -306,10 +352,13 @@ async fn relocate_media_import(app: tauri::AppHandle, token: String, space_id: S
     std::fs::rename(&stage.directory, &destination).map_err(|error| error.to_string())?;
     stage.directory = destination;
     Ok(())
+
+    }).await
 }
 
 #[tauri::command]
-async fn discard_media_import(app: tauri::AppHandle, token: String) -> Result<(), String> {
+async fn discard_media_import(app: tauri::AppHandle, token: String, operation_id: Option<String>) -> Result<(), String> {
+    crate::diagnostics::logged("discard_media_import", operation_id, async {
     let state = app.state::<NativeState>();
     let mut pending = state.media_import.lock().map_err(|error| error.to_string())?;
     if let Some(stage) = pending.as_ref() {
@@ -318,10 +367,13 @@ async fn discard_media_import(app: tauri::AppHandle, token: String) -> Result<()
         *pending = None;
     }
     Ok(())
+
+    }).await
 }
 
 #[tauri::command]
-async fn get_preview_media(app: tauri::AppHandle, project_id: String, part_name: String, recording_id: String, media_id: String, space_id: Option<String>) -> Result<Value, String> {
+async fn get_preview_media(app: tauri::AppHandle, project_id: String, part_name: String, recording_id: String, media_id: String, space_id: Option<String>, operation_id: Option<String>) -> Result<Value, String> {
+    crate::diagnostics::logged("get_preview_media", operation_id, async {
     let state = app.state::<NativeState>();
     let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
     let root = space_root(&app, space_id.as_deref())?;
@@ -333,6 +385,8 @@ async fn get_preview_media(app: tauri::AppHandle, project_id: String, part_name:
     grants.insert(identifier.clone(), (root, path));
     let prefix = if cfg!(target_os = "windows") { "http://mida-media.localhost" } else { "mida-media://localhost" };
     Ok(json!({"url":format!("{prefix}/{identifier}/video.mp4"),"map":map}))
+
+    }).await
 }
 
 fn main() {
@@ -348,10 +402,12 @@ fn main() {
         }))
         .plugin(tauri_plugin_dialog::init())
         .plugin(tauri_plugin_clipboard_manager::init())
+        .plugin(tauri_plugin_opener::init())
         .setup(|app| {
             let root = app.path().app_data_dir()?;
+            diagnostics::initialize(root.clone());
             media::initialize(&root).map_err(std::io::Error::other)?;
-            if let Err(error) = workspace::finish_media_cleanup(&root) { eprintln!("媒体缓存清理将在后续导入重试：{error}"); }
+            if let Err(error) = workspace::finish_media_cleanup(&root) { diagnostics::event("media.cleanup_deferred", "WARN", None, None); let _ = error; }
             let spaces = root.join("spaces");
             media::safe_path(&spaces).map_err(std::io::Error::other)?;
             if spaces.is_dir() {
@@ -359,7 +415,7 @@ fn main() {
                     let entry = entry?;
                     if valid_space(&entry.file_name().to_string_lossy()) && entry.file_type()?.is_dir() {
                         media::initialize(&entry.path()).map_err(std::io::Error::other)?;
-                        if let Err(error) = workspace::finish_media_cleanup(&entry.path()) { eprintln!("语言空间媒体清理将在保存时重试：{error}"); }
+                        if let Err(error) = workspace::finish_media_cleanup(&entry.path()) { diagnostics::event("media.space_cleanup_deferred", "WARN", None, None); let _ = error; }
                     }
                 }
             }
@@ -376,7 +432,7 @@ fn main() {
                 None => tauri::http::Response::builder().status(404).body(Vec::new()).unwrap_or_default(),
             }
         })
-        .invoke_handler(tauri::generate_handler![begin_package_import, cancel_package_import, choose_package, import_dropped_package, export_package, translation_json::choose_translation_json, translation_json::choose_translation_directory, translation_json::export_translation_json, translation_json::copy_translation_json, confirm_action, finish_exit, workspace_read, workspace_archive_ledger, workspace_recovery, workspace_recover, workspace_save, workspace_save_entry, workspace_save_task, workspace_spaces, workspace_cache_epoch, clear_all_cache, relocate_media_import, discard_media_import, get_preview_media, updater::repository_history, updater::check_app_update, updater::install_app_update])
+        .invoke_handler(tauri::generate_handler![diagnostics::diagnostics_info, diagnostics::diagnostics_write, diagnostics::diagnostics_snapshot, diagnostics::diagnostics_open, feedback::feedback_request, feedback::feedback_open, begin_package_import, cancel_package_import, choose_package, import_dropped_package, export_package, translation_json::choose_translation_json, translation_json::choose_translation_directory, translation_json::export_translation_json, translation_json::copy_translation_json, confirm_action, finish_exit, workspace_read, workspace_archive_ledger, workspace_recovery, workspace_recover, workspace_save, workspace_save_entry, workspace_save_task, workspace_spaces, workspace_cache_epoch, clear_all_cache, relocate_media_import, discard_media_import, get_preview_media, updater::repository_history, updater::check_app_update, updater::install_app_update])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                 if let Ok(mut dropped) = window.state::<NativeState>().dropped_paths.lock() {

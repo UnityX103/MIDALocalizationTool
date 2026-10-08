@@ -10,3 +10,5 @@ fs.copyFileSync(path.join(root, 'translation-json.js'), path.join(destination, '
 fs.copyFileSync(path.join(root, 'preview-player.js'), path.join(destination, 'preview-player.js'));
 fs.copyFileSync(path.join(root, 'app-icon.svg'), path.join(destination, 'app-icon.svg'));
 fs.copyFileSync(path.join(root, 'import-worker.js'), path.join(destination, 'import-worker.js'));
+
+for (const file of ['diagnostics.js', 'feedback.js']) fs.copyFileSync(path.join(root,file),path.join(destination,file));

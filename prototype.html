@@ -105,6 +105,16 @@ body{padding:12px}
 #mida-loc-app .imported-translation .translation-content{flex-basis:180px}
 #mida-loc-app .imported-translation textarea{border-color:#89764c}
 #mida-loc-app .imported-translation label{color:#f1ce84}
+
+#mida-loc-app .feedback-form{font-size:16px;line-height:1.65}
+#mida-loc-app .feedback-field{display:block;margin:14px 0}
+#mida-loc-app .feedback-field input:not([type=checkbox]),#mida-loc-app .feedback-field textarea{display:block;box-sizing:border-box;width:100%;margin-top:6px;font:inherit}
+#mida-loc-app .feedback-field textarea{height:120px;min-height:90px}
+#mida-loc-app .feedback-log-choice{display:flex;align-items:center;gap:8px;margin:18px 0}
+#mida-loc-app .feedback-previews{display:flex;gap:10px;flex-wrap:wrap}
+#mida-loc-app .feedback-previews img{max-width:180px;max-height:140px;object-fit:contain}
+#mida-loc-app .feedback-form pre{max-height:280px;overflow:auto;white-space:pre-wrap;overflow-wrap:anywhere;font-size:13px}
+#mida-loc-app .feedback-form a{color:#9ddcff;overflow-wrap:anywhere}
 </style>
 </head>
 <body>
@@ -118,6 +128,7 @@ body{padding:12px}
       <div class="spacer"></div>
       <button id="loc-settings"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><path d="M3 6h4m4 0h10M3 12h10m4 0h4M3 18h4m4 0h10"/><circle cx="9" cy="6" r="2"/><circle cx="15" cy="12" r="2"/><circle cx="9" cy="18" r="2"/></svg>偏好</button>
       <button id="loc-about"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false"><circle cx="12" cy="12" r="9"/><path d="M12 11v6M12 7h.01"/></svg>关于</button>
+      <button id="loc-feedback"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" aria-hidden="true"><path d="M4 4h16v12H9l-5 4z"/><path d="M8 8h8M8 12h5"/></svg>问题反馈</button>
     </nav>
     <aside class="taskpane" id="loc-taskpane" aria-label="片段语言任务">
       <div class="taskhead"><h3>翻译任务<span id="loc-unsaved" hidden role="status" aria-label="有未保存的修改" title="有未保存的修改">*</span></h3><div class="space-controls"><select id="loc-space" aria-label="当前语言空间" disabled><option value="">拖入 ZIP 后自动创建</option></select></div></div>
@@ -144,17 +155,20 @@ body{padding:12px}
     <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="loc-dialog-title"><div class="dialoghead"><h3 id="loc-dialog-title"></h3><button id="loc-close" aria-label="关闭弹窗">关闭</button></div><div id="loc-dialog-content"></div></section>
   </div>
 </div>
+<script src="diagnostics.js"></script>
 <script src="workspace-store.js"></script>
 <script src="workload.js"></script>
 <script src="translation-json.js"></script>
 <script src="preview-player.js"></script>
+<script src="feedback.js"></script>
 <script>
 (()=>{
 const root=document.getElementById('mida-loc-app');
 const nativeApp=globalThis.__TAURI__;
+MidaDiagnostics.instrument(LocalizationWorkspaceStore);
 let updateInfo=null,updateChecking=false,appUpdateInstalling=false,updateDialogActive=false,updatePromptPending=false;
 const skippedUpdateKey='mida-localization-editor-skipped-update';
-const invokeNative=(command,args)=>nativeApp.core.invoke(command,args).catch(error=>{throw new Error(typeof error==='string'?error:error.message||String(error));});
+const invokeNative=(command,args)=>MidaDiagnostics.invoke(command,args).catch(error=>{throw new Error(typeof error==='string'?error:error.message||String(error));});
 const find=selector=>root.querySelector(selector);
 const tasks=[];
 function getPackageName(key){const separator=key.lastIndexOf('_');return separator>0?key.slice(0,separator):key;}
@@ -213,7 +227,7 @@ async function switchSpace(space){
   await saveQueue.catch(()=>{});workspaceStore=nextStore;storageReady=true;saveQueue=Promise.resolve();restoreWorkspace(record?.snapshot||null);
   if(space)knownSpaces.add(space);rememberSpaces();closeDialog();setNotice(record?.mediaWarning||'已切换语言空间，其他空间的数据与视频保持不变。');
   find('#loc-save-state').textContent=record?'已恢复此空间的自动保存':'此空间尚未导入数据';
- }catch(error){setNotice('空间切换失败，当前编辑保留：'+error.message);}
+ }catch(error){MidaDiagnostics.report(error);setNotice('空间切换失败，当前编辑保留：'+error.message);}
  finally{switchingSpace=false;root.inert=false;renderSpaces();}
 }
 let storageReady=false,saveQueue=Promise.resolve(),editRevision=0;
@@ -223,7 +237,7 @@ let previews=Object.create(null);
 const requiresWork=entry=>editingEntries.has(entry)||entry.review.state!=='confirmed';
 const pending=task=>task.entries.filter(requiresWork).length;
 const element=(tag,className,text)=>{const result=document.createElement(tag);if(className)result.className=className;if(text!==undefined)result.textContent=text;return result;};
-function setNotice(text){find('#loc-notice').textContent=text;}
+function setNotice(text){MidaDiagnostics.record('ui.notice');find('#loc-notice').textContent=text;}
 async function checkForAppUpdate({startup=false}={}){
  if(!nativeApp||updateChecking||appUpdateInstalling||updateDialogActive)return;
  updateChecking=true;const button=find('#loc-app-update');button.hidden=false;button.disabled=true;button.textContent='正在检查更新…';
@@ -232,7 +246,7 @@ async function checkForAppUpdate({startup=false}={}){
   updatePromptPending=Boolean(updateInfo.available&&(!startup||updateInfo.mandatory||skipped!==updateInfo.version));
   button.textContent=updateInfo.available?(updateInfo.mandatory?'强制更新 ':'发现新版 ')+updateInfo.version+' · 查看更新':updateInfo.development?'开发版 · 不安装更新':'已是最新版本 '+updateInfo.current;
   button.title='';
- }catch(error){updateInfo=null;updatePromptPending=false;button.textContent='更新检查失败 · 点击重试';button.title=error.message;}
+ }catch(error){MidaDiagnostics.report(error);updateInfo=null;updatePromptPending=false;button.textContent='更新检查失败 · 点击重试';button.title=error.message;}
  finally{updateChecking=false;button.disabled=false;}
  presentPendingUpdate();
 }
@@ -251,17 +265,17 @@ function showAppUpdate(){
  if(!updateInfo.mandatory){
   const later=element('button','','稍后提醒'),skip=element('button','','跳过这个版本');content.append(later,skip);
   later.addEventListener('click',closeDialog);
-  skip.addEventListener('click',()=>{if(appUpdateInstalling)return;try{localStorage.setItem(skippedUpdateKey,updateInfo.version);closeDialog();setNotice('已跳过 '+updateInfo.version+'；仍可在偏好中手动检查并安装。');}catch(error){progress.textContent='无法保存跳过选择，请稍后重试：'+error.message;}});
+  skip.addEventListener('click',()=>{if(appUpdateInstalling)return;try{localStorage.setItem(skippedUpdateKey,updateInfo.version);closeDialog();setNotice('已跳过 '+updateInfo.version+'；仍可在偏好中手动检查并安装。');}catch(error){MidaDiagnostics.report(error);progress.textContent='无法保存跳过选择，请稍后重试：'+error.message;}});
  }else{
   const exit=element('button','','退出应用');content.append(exit);
-  exit.addEventListener('click',async()=>{if(appUpdateInstalling)return;exit.disabled=true;try{await saveQueue.catch(()=>{});if(state.modified)await saveWorkspace();await invokeNative('finish_exit');}catch(error){progress.textContent='退出前保存失败：'+error.message;exit.disabled=false;}});
+  exit.addEventListener('click',async()=>{if(appUpdateInstalling)return;exit.disabled=true;try{await saveQueue.catch(()=>{});if(state.modified)await saveWorkspace();await invokeNative('finish_exit');}catch(error){MidaDiagnostics.report(error);progress.textContent='退出前保存失败：'+error.message;exit.disabled=false;}});
  }
  install.focus();
  install.addEventListener('click',async()=>{
   if(!storageReady||importInProgress||switchingSpace||appUpdateInstalling||clearingCache){progress.textContent='当前存储不可用或操作尚未完成，请稍后重试。';return;}
   appUpdateInstalling=true;root.inert=true;previewPlayer.video.pause();install.disabled=true;
   try{await saveQueue.catch(()=>{});const saved=await saveWorkspace('应用更新前');if(saved?.mediaWarning)throw new Error(saved.mediaWarning);progress.textContent='正在更新…';await invokeNative('install_app_update');}
-  catch(error){progress.textContent=error.message+'；现有编辑内容保留，可稍后重试。';}
+  catch(error){MidaDiagnostics.report(error);progress.textContent=error.message+'；现有编辑内容保留，可稍后重试。';}
   finally{appUpdateInstalling=false;root.inert=false;install.disabled=false;}
  });
 }
@@ -414,7 +428,7 @@ async function showBackups(){
  content.append(element('p','helper','导入成功会删除同片段的所有旧视频；备份只保留译文和媒体引用。恢复旧备份不会找回已删除的视频，也不会用新录像冒充旧录像。'));
  try{
   const history=await historyStore.history();if(find('#loc-dialog-title').textContent!=='历史记录与自动备份'||find('#loc-overlay').hidden)return;if(!history.length)content.append(element('p','helper','暂时没有备份，首次保存后会自动建立。'));
-  if(!storageReady&&!nativeApp){const info=await historyStore.recoveryInfo();const snapshot=info.current?.snapshot;if(snapshot?.tasks?.reduce((sum,task)=>sum+(task.entries?.length||0),0)>100000){const split=element('button','primary','拆分超限存档并恢复');split.addEventListener('click',async()=>{split.disabled=true;try{const chunks=[];let group=[],count=0;for(const task of snapshot.tasks){requireValue(task.entries.length<=100000,'单片段超限，请先导出原始存档后拆分源 ZIP');if(count+task.entries.length>100000){chunks.push(group);group=[];count=0;}group.push(task);count+=task.entries.length;}if(group.length)chunks.push(group);const snapshots=chunks.map(group=>{const indexes=new Map(group.map((task,i)=>[snapshot.tasks.indexOf(task),i]));return {...snapshot,tasks:group,drafts:snapshot.drafts.filter(draft=>indexes.has(draft.taskIndex)).map(draft=>({...draft,taskIndex:indexes.get(draft.taskIndex)})),importedTranslations:(snapshot.importedTranslations||[]).filter(candidate=>group.some(task=>task.partName===candidate.partName&&task.language===candidate.language)),previews:Object.fromEntries(Object.entries(snapshot.previews||{}).filter(([name,preview])=>group.some(task=>ownsPreview(task,name,preview)))),previewPlayer:null,state:{...snapshot.state,active:0,cursor:-1,selected:group.map((_,i)=>i)}};});snapshots.forEach(validateWorkspace);const result=await historyStore.recover(snapshots[0],snapshots.slice(1));storageReady=true;saveQueue=Promise.resolve();historyView=null;restoreWorkspace(result.snapshot);closeDialog();setNotice('已拆分为 '+chunks.length+' 组，其他组可在历史备份中打开；原始存档已保护。');}catch(error){setNotice(error.message);split.disabled=false;}});content.append(split);}}
+  if(!storageReady&&!nativeApp){const info=await historyStore.recoveryInfo();const snapshot=info.current?.snapshot;if(snapshot?.tasks?.reduce((sum,task)=>sum+(task.entries?.length||0),0)>100000){const split=element('button','primary','拆分超限存档并恢复');split.addEventListener('click',async()=>{split.disabled=true;try{const chunks=[];let group=[],count=0;for(const task of snapshot.tasks){requireValue(task.entries.length<=100000,'单片段超限，请先导出原始存档后拆分源 ZIP');if(count+task.entries.length>100000){chunks.push(group);group=[];count=0;}group.push(task);count+=task.entries.length;}if(group.length)chunks.push(group);const snapshots=chunks.map(group=>{const indexes=new Map(group.map((task,i)=>[snapshot.tasks.indexOf(task),i]));return {...snapshot,tasks:group,drafts:snapshot.drafts.filter(draft=>indexes.has(draft.taskIndex)).map(draft=>({...draft,taskIndex:indexes.get(draft.taskIndex)})),importedTranslations:(snapshot.importedTranslations||[]).filter(candidate=>group.some(task=>task.partName===candidate.partName&&task.language===candidate.language)),previews:Object.fromEntries(Object.entries(snapshot.previews||{}).filter(([name,preview])=>group.some(task=>ownsPreview(task,name,preview)))),previewPlayer:null,state:{...snapshot.state,active:0,cursor:-1,selected:group.map((_,i)=>i)}};});snapshots.forEach(validateWorkspace);const result=await historyStore.recover(snapshots[0],snapshots.slice(1));storageReady=true;saveQueue=Promise.resolve();historyView=null;restoreWorkspace(result.snapshot);closeDialog();setNotice('已拆分为 '+chunks.length+' 组，其他组可在历史备份中打开；原始存档已保护。');}catch(error){MidaDiagnostics.report(error);setNotice(error.message);split.disabled=false;}});content.append(split);}}
   for(const backup of history){
    const row=element('div','dialogline');row.append(element('span','',new Date(backup.savedAt).toLocaleString()+' · '+backup.reason+' · '+backup.taskCount+' 个任务'));
    const view=element('button','','查看（只读）'),button=element('button','',storageReady?'回退':'恢复');if(backup.unavailable){row.append(element('span','pending','不可用：'+backup.unavailable));content.append(row);continue;}
@@ -427,12 +441,12 @@ async function showBackups(){
      const record=await read();root.inert=true;
      if(!historyView&&storageReady){const saving=saveWorkspace();historyBusy=true;await saving;}
      historyView={record,backup};restoreWorkspace(record.snapshot);historyBusy=false;closeDialog();renderAll();setNotice('正在只读查看历史记录，不会覆盖最新版本。');
-    }catch(error){setNotice('查看失败：'+error.message);}finally{historyBusy=false;root.inert=false;view.disabled=false;}
+    }catch(error){MidaDiagnostics.report(error);setNotice('查看失败：'+error.message);}finally{historyBusy=false;root.inert=false;view.disabled=false;}
    });
-   button.addEventListener('click',async()=>{button.disabled=true;try{confirmHistoryRollback(await read(),backup);}catch(error){setNotice(error.message);}finally{button.disabled=false;}});
+   button.addEventListener('click',async()=>{button.disabled=true;try{confirmHistoryRollback(await read(),backup);}catch(error){MidaDiagnostics.report(error);setNotice(error.message);}finally{button.disabled=false;}});
    row.append(view,button);content.append(row);
   }
- }catch(error){content.append(element('p','helper pending','本地存储不可用：'+error.message));}
+ }catch(error){MidaDiagnostics.report(error);content.append(element('p','helper pending','本地存储不可用：'+error.message));}
 }
 function confirmHistoryRollback(record,backup){
  if(jsonBusy||historyBusy||clearingCache||importInProgress||switchingSpace)return;
@@ -452,12 +466,12 @@ function confirmHistoryRollback(record,backup){
     try{LocalizationWorkload.validateLedger(latest.workLedger);await workspaceStore.loadArchives(latest);
     restored.workLedger=structuredClone(latest.workLedger);
     LocalizationWorkload.alignSources(restored.workLedger,restored.tasks,restored.currentManifest,(record.snapshot.workLedger?.sources||[]).map(source=>({...source,startIndex:latest.workLedger.id===record.snapshot.workLedger?.id?Math.min(source.startIndex,restored.workLedger.records.length):0})));
-    }catch(error){if(!recovering)throw error;ledgerWarning='最新台账无法验证，已保留原始存档供核对；当前使用备份台账。';}
+    }catch(error){MidaDiagnostics.report(error);if(!recovering)throw error;ledgerWarning='最新台账无法验证，已保留原始存档供核对；当前使用备份台账。';}
    }
    validateWorkspace(restored);const result=recovering?await workspaceStore.recover(restored):await workspaceStore.save(restored,'回退历史后');storageReady=true;
    saveQueue=Promise.resolve(result);
    historyView=null;editRevision++;restoreWorkspace(result.snapshot);historyBusy=false;closeDialog();setNotice(ledgerWarning||result.mediaWarning||(recovering?'已恢复有效备份；原始存档已单独保护。':'已回退为所选历史记录；回退前的最新内容已备份。'));
-  }catch(error){progress.textContent='回退失败：'+error.message+'。未切换编辑内容，请重试。';confirm.disabled=false;}
+  }catch(error){MidaDiagnostics.report(error);progress.textContent='回退失败：'+error.message+'。未切换编辑内容，请重试。';confirm.disabled=false;}
   finally{historyBusy=false;root.inert=false;updateSummary();}
  });
 }
@@ -466,7 +480,7 @@ find('#loc-history-return').addEventListener('click',async()=>{
  if(!historyView||historyBusy)return;
  historyBusy=true;root.inert=true;
  try{if(!storageReady){historyView=null;restoreWorkspace(null);setNotice('已返回恢复模式，请从偏好打开有效备份。');return;}const record=await workspaceStore.load();if(record)validateWorkspace(record.snapshot);historyView=null;restoreWorkspace(record?.snapshot||null);setNotice(record?.mediaWarning||'已返回当前最新版本，可以继续编辑。');}
- catch(error){setNotice('返回失败：'+error.message);}
+ catch(error){MidaDiagnostics.report(error);setNotice('返回失败：'+error.message);}
  finally{historyBusy=false;root.inert=false;updateSummary();}
 });
 async function initializeWorkspace(){
@@ -480,7 +494,7 @@ async function initializeWorkspace(){
   if(!record)record=await workspaceStore.load();originalSpaceLanguage=workspaceStore.spaceId?'':record?.snapshot.tasks[0]?.language||null;
   if(record)restoreWorkspace(record.snapshot);
   storageReady=true;find('#loc-save-state').textContent=record?'已恢复自动保存 · '+new Date(record.savedAt).toLocaleString():'导入 ZIP 后自动保存到本机';if(record?.mediaWarning)setNotice(record.mediaWarning);
- }catch(error){find('#loc-save-state').textContent='自动恢复失败：'+error.message;setNotice('当前内容未被覆盖，自动保存已暂停。可在偏好中恢复有效备份或切换健康空间；若浏览器不允许本地存储，请使用本机服务地址打开。');}
+ }catch(error){MidaDiagnostics.report(error);find('#loc-save-state').textContent='自动恢复失败：'+error.message;setNotice('当前内容未被覆盖，自动保存已暂停。可在偏好中恢复有效备份或切换健康空间；若浏览器不允许本地存储，请使用本机服务地址打开。');}
  finally{root.inert=false;updateSummary();}
 }
 function updatePackageVideoButtons(){for(const [name,view] of packageViews)view.videoButton.hidden=!previewPlayer.canSeekPackage(name);}
@@ -511,9 +525,9 @@ async function showLedgerArchives(){
   const document={format:'mida-localization',formatVersion:1,projectId:currentProjectId,parentPackageId:currentPackageId,fileVersion:{...fileVersion,revision:Math.max(exportSequence,fileVersion.revision)},deliveryState:'draft',tasks:tasks};
   const {archive,next}=await LocalizationWorkload.prepareArchive(workLedger,document);await workspaceStore.archiveLedger(archive);
   snapshot.workLedger=next;snapshot.exportSequence=Math.max(snapshot.exportSequence,...archive.packets.map(packet=>packet.fileVersion.revision));const result=await workspaceStore.save(snapshot,'台账归档后');LocalizationWorkload.registerArchive(archive);saveQueue=Promise.resolve(result);restoreWorkspace(result.snapshot);historyBusy=false;closeDialog();setNotice('台账已归档，可以继续生产。历史待交接记录保留，归档列表可导出当前片段的固定 ZIP；已移出片段请核对原交付记录。');
- }catch(error){setNotice('归档未完成：'+error.message);rotate.disabled=false;}finally{historyBusy=false;root.inert=false;}});content.append(rotate);
+ }catch(error){MidaDiagnostics.report(error);setNotice('归档未完成：'+error.message);rotate.disabled=false;}finally{historyBusy=false;root.inert=false;}});content.append(rotate);
  for(const item of workLedger.archives||[]){const row=element('div','dialogline');row.append(element('span','',new Date(item.archivedAt).toLocaleString()+' · '+item.chars+' 字 · 待交接 '+item.pendingChars+' 字'));
-  const download=element('button','','导出归档 ZIP');download.addEventListener('click',async()=>{download.disabled=true;root.inert=true;try{const paths=[];const archive=await workspaceStore.readArchive(item.id);for(const packet of archive.packets){if(nativeApp)await invokeNative('export_package',{document:packet,allowUnresolved:true});else{const response=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({document:packet,allowUnresolved:true}),signal:AbortSignal.timeout(60000)}),result=await response.json();if(!response.ok)throw new Error(result.error);paths.push(result.path);}}setNotice((paths.length?'归档 ZIP 已保存：'+paths.join('；')+'。':'归档交付已导出。')+'导入 Unity 回执后更新归档待交接字数。');}catch(error){setNotice(error.message);}finally{download.disabled=false;root.inert=false;}});const detail=element('button','','导出完整台账 JSON');detail.addEventListener('click',async()=>{detail.disabled=true;try{const archive=await workspaceStore.readArchive(item.id,true),url=URL.createObjectURL(new Blob([JSON.stringify({format:archive.format,version:archive.version,id:archive.id,ledger:archive.ledger,receiptHashes:item.receiptHashes||[],acknowledgedBits:item.acknowledgedBits||null,pendingChars:item.pendingChars},null,2)],{type:'application/json'})),link=element('a');link.href=url;link.download='台账-'+item.id+'.json';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}catch(error){setNotice(error.message);}finally{detail.disabled=false;}});row.append(download,detail);content.append(row);
+  const download=element('button','','导出归档 ZIP');download.addEventListener('click',async()=>{download.disabled=true;root.inert=true;try{const paths=[];const archive=await workspaceStore.readArchive(item.id);for(const packet of archive.packets){if(nativeApp)await invokeNative('export_package',{document:packet,allowUnresolved:true});else{const response=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({document:packet,allowUnresolved:true}),signal:AbortSignal.timeout(60000)}),result=await response.json();if(!response.ok)throw new Error(result.error);paths.push(result.path);}}setNotice((paths.length?'归档 ZIP 已保存：'+paths.join('；')+'。':'归档交付已导出。')+'导入 Unity 回执后更新归档待交接字数。');}catch(error){MidaDiagnostics.report(error);setNotice(error.message);}finally{download.disabled=false;root.inert=false;}});const detail=element('button','','导出完整台账 JSON');detail.addEventListener('click',async()=>{detail.disabled=true;try{const archive=await workspaceStore.readArchive(item.id,true),url=URL.createObjectURL(new Blob([JSON.stringify({format:archive.format,version:archive.version,id:archive.id,ledger:archive.ledger,receiptHashes:item.receiptHashes||[],acknowledgedBits:item.acknowledgedBits||null,pendingChars:item.pendingChars},null,2)],{type:'application/json'})),link=element('a');link.href=url;link.download='台账-'+item.id+'.json';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}catch(error){MidaDiagnostics.report(error);setNotice(error.message);}finally{detail.disabled=false;}});row.append(download,detail);content.append(row);
  }
 }
 find('#loc-work-help').addEventListener('click',()=>{
@@ -638,7 +652,7 @@ function renderEntries(){
    if(draft){
     if(!LocalizationWorkspaceStore.acceptsTranslation(task,entry,draft.text))return;
     try{addedRecord=LocalizationWorkload.confirmed(workLedger,task,{...entry,translation:draft.text},draft.before||{translation:entry.translation,state:entry.review.state},currentManifest);}
-    catch(error){setNotice(error.message);return;}
+    catch(error){MidaDiagnostics.report(error);setNotice(error.message);return;}
     entry.translation=draft.text;entry.review.state='confirmed';editingEntries.delete(entry);candidateDirty.delete(candidate);importedTranslations.delete(LocalizationTranslationJson.key(task,entry));changeSaved();setNotice('');
    }
    else {editingEntries.set(entry,{text:entry.translation});changeSaved();}
@@ -679,8 +693,8 @@ function moveToNextPending(openEditor=false){
  return true;
 }
 function renderAll(){root.classList.toggle('stacked',state.layout==='上下排列');find('#loc-taskpane').classList.toggle('collapsed',!state.menu);find('#loc-collapse').setAttribute('aria-label',state.menu?'收起任务菜单':'展开任务菜单');renderTasks();renderEntries();updateSummary();previewPlayer.refresh();}
-function closeDialog(){if(importInProgress){cancelActiveImport?.();return;}if(jsonBusy||clearingCache||historyBusy||(updateDialogActive&&(updateInfo?.mandatory||appUpdateInstalling)))return;updateDialogActive=false;find('#loc-close').hidden=false;const cleanup=dialogCleanup;dialogCleanup=null;if(cleanup)cleanup();find('#loc-overlay').hidden=true;if(restoreFocus&&restoreFocus.isConnected)restoreFocus.focus();}
-function openDialog(title){if(updateDialogActive&&(updateInfo?.mandatory||appUpdateInstalling))return element('div');closeDialog();restoreFocus=document.activeElement;find('#loc-dialog-title').textContent=title;const content=find('#loc-dialog-content');content.replaceChildren();find('#loc-overlay').hidden=false;find('#loc-close').focus();return content;}
+function closeDialog(){if(importInProgress){cancelActiveImport?.();return;}if(jsonBusy||clearingCache||historyBusy||(updateDialogActive&&(updateInfo?.mandatory||appUpdateInstalling)))return;updateDialogActive=false;find('#loc-close').hidden=false;MidaFeedback.close();const cleanup=dialogCleanup;dialogCleanup=null;if(cleanup)cleanup();find('#loc-overlay').hidden=true;if(restoreFocus&&restoreFocus.isConnected)restoreFocus.focus();}
+function openDialog(title){if(updateDialogActive&&(updateInfo?.mandatory||appUpdateInstalling))return element('div');closeDialog();restoreFocus=document.activeElement;find('#loc-dialog-title').textContent=title;const content=find('#loc-dialog-content');content.classList.remove('feedback-form');content.replaceChildren();find('#loc-overlay').hidden=false;find('#loc-close').focus();return content;}
 function canUseTranslationJson(){
  return storageReady&&tasks.length&&!jsonBusy&&!historyView&&!historyBusy&&!importInProgress&&!exporting&&!switchingSpace&&!clearingCache&&!appUpdateInstalling&&!updateDialogActive;
 }
@@ -688,7 +702,7 @@ async function runTranslationJson(action,operation){
  if(!canUseTranslationJson())return false;
  jsonBusy=true;root.inert=true;setNotice(action+'…');
  try{await operation();return true;}
- catch(error){setNotice(error.translationCommitted?error.message:action+'失败，已有译文和工作量保持不变：'+String(error.message||error));return false;}
+ catch(error){MidaDiagnostics.report(error);setNotice(error.translationCommitted?error.message:action+'失败，已有译文和工作量保持不变：'+String(error.message||error));return false;}
  finally{jsonBusy=false;root.inert=Boolean(clearingCache);renderAll();}
 }
 async function saveTranslationSnapshot(snapshot,reason){
@@ -698,7 +712,7 @@ async function saveTranslationSnapshot(snapshot,reason){
  const operation=saveQueue.catch(()=>{}).then(()=>targetStore.save(snapshot,reason));saveQueue=operation;
  const record=await operation;
  try{restoreWorkspace(snapshot);}
- catch(error){storageReady=false;const failure=new Error('数据已保存，但界面恢复失败，请重新打开应用：'+String(error.message||error));failure.translationCommitted=true;throw failure;}
+ catch(error){MidaDiagnostics.report(error);storageReady=false;const failure=new Error('数据已保存，但界面恢复失败，请重新打开应用：'+String(error.message||error));failure.translationCommitted=true;throw failure;}
  if(record.mediaWarning)setNotice(record.mediaWarning);
  return record;
 }
@@ -832,7 +846,7 @@ async function exportTranslationJson(includeTranslated=false,directory=null,mode
    const handle=await directory.getFileHandle(fileName,{create:true});
    const writable=await handle.createWritable();
    try{await writable.write(text);await writable.close();}
-   catch(error){await writable.abort().catch(()=>{});throw error;}
+   catch(error){MidaDiagnostics.report(error);await writable.abort().catch(()=>{});throw error;}
    setNotice('原文 JSON 已导出：'+directory.name+'/'+fileName);
   }else{
    const url=URL.createObjectURL(new Blob([text],{type:'application/json;charset=utf-8'})),link=document.createElement('a');
@@ -1068,7 +1082,7 @@ function showVersionImport(initialFile){
   try{
    if(requestId)await(nativeApp?invokeNative('cancel_package_import',{requestId}):control('cancel',{requestId}));
    if(!disposed&&!busy)await finishCancelled();
-  }catch(error){if(disposed)return;progressText.textContent='取消请求失败：'+error.message+'；可重试取消。';cancelled=false;cancel.disabled=false;}
+  }catch(error){MidaDiagnostics.report(error);if(disposed)return;progressText.textContent='取消请求失败：'+error.message+'；可重试取消。';cancelled=false;cancel.disabled=false;}
  };
  cancel.addEventListener('click',requestCancel);cancelActiveImport=requestCancel;
  dialogCleanup=()=>{disposed=true;loadToken++;clearInterval(leaseTimer);stopProgress();stopParser();discard(mediaImportToken).catch(error=>setNotice('临时数据清理失败：'+error.message));mediaImportToken=null;unlock();};
@@ -1077,7 +1091,7 @@ function showVersionImport(initialFile){
   if(!requestId||cancelled)return;
   const watchedId=requestId;
   try{const status=await control('status',{requestId:watchedId});if(requestId!==watchedId)return;report(status.fraction*60,status.phase);if(status.done)return;}
-  catch(error){if(requestId!==watchedId)return;if(!cancelled)progressText.textContent='等待导入服务响应…';}
+  catch(error){MidaDiagnostics.report(error);if(requestId!==watchedId)return;if(!cancelled)progressText.textContent='等待导入服务响应…';}
   if(busy&&!cancelled)pollTimer=setTimeout(watchProgress,250);
  };
  const createPlans=async(start=75,end=80)=>{const plans=[];for(const [index,task] of loaded.entries()){await checkpoint();plans.push(currentProjectId?await planMerge({task},checkpoint):{index:-1,merged:await cloneImportTask(task,checkpoint),unchanged:false,stats:{reused:0,changed:0,added:task.entries.length,removed:0,unfinished:0,conflicts:0}});report(start+(end-start)*(index+1)/loaded.length,'计算片段合并');}return plans;};
@@ -1146,10 +1160,10 @@ function showVersionImport(initialFile){
     apply.textContent='确定';apply.disabled=false;
    }else await describe();
    report(80,'校验完成，等待确认导入');
-  }catch(error){
+  }catch(error){MidaDiagnostics.report(error);
    if(requestId)await(nativeApp?invokeNative('cancel_package_import',{requestId}):control('cancel',{requestId})).catch(()=>{});
    if(isCurrent()){
-    if(cancelled){try{await finishCancelled();}catch(cleanupError){cancelled=false;cancel.disabled=false;progressText.textContent='临时数据清理失败：'+cleanupError.message;}}
+    if(cancelled){try{await finishCancelled();}catch(cleanupError){MidaDiagnostics.report(cleanupError,"cleanup.failed");cancelled=false;cancel.disabled=false;progressText.textContent='临时数据清理失败：'+cleanupError.message;}}
     else{await discard(mediaImportToken).catch(cleanupError=>setNotice(cleanupError.message));mediaImportToken=null;loaded=null;headline.textContent='压缩包未导入，已有编辑保持不变。';preview.replaceChildren(element('p','helper pending',error.message));progressText.textContent='导入失败';}
    }
   }finally{busy=false;requestId=null;stopProgress();stopParser();}
@@ -1186,10 +1200,10 @@ function showVersionImport(initialFile){
    state.active=active;state.selected=selected;state.filter='all';state.search='';state.cursor=-1;find('#loc-filter').value='all';find('#loc-search').value='';
    await checkpoint();committing=true;cancel.disabled=true;find('#loc-close').disabled=true;progress.removeAttribute('value');progressText.textContent='正在原子保存，请稍候；此阶段不能取消。';await new Promise(resolve=>setTimeout(resolve,0));
    changeSaved();const record=await saveWorkspace('导入新版本后',mediaImportToken);committed=true;mediaImportToken=null;progress.value=100;progressText.textContent='导入完成 · 100%';unlock();if(workspaceStore.spaceId)knownSpaces.add(workspaceStore.spaceId);else originalSpaceLanguage=loaded[0].language;rememberSpaces();renderAll();closeDialog();find('#loc-sentences').scrollTop=0;setNotice(record.mediaWarning||'版本导入完成并已自动保存；同片段旧视频已清理。译文可通过备份恢复，旧视频不会恢复。');
-  }catch(error){
+  }catch(error){MidaDiagnostics.report(error);
    if(committed){unlock();closeDialog();setNotice('数据已导入并保存，界面刷新失败，请重新打开应用：'+error.message);return;}
    if(workspaceChanged){workspaceStore=sourceStore;restoreWorkspace(previous);loaded=null;}
-   if(cancelled){try{await finishCancelled();}catch(cleanupError){cancelled=false;preview.replaceChildren(element('p','helper pending',cleanupError.message));}}
+   if(cancelled){try{await finishCancelled();}catch(cleanupError){MidaDiagnostics.report(cleanupError,"cleanup.failed");cancelled=false;preview.replaceChildren(element('p','helper pending',cleanupError.message));}}
    else{preview.replaceChildren(element('p','helper pending',error.message+'；请关闭后重新导入。'));progress.value=94;progressText.textContent='导入失败，原工作区已恢复';apply.disabled=!loaded;}
   }finally{busy=false;committing=false;cancel.disabled=false;find('#loc-close').disabled=false;}
 
@@ -1247,7 +1261,7 @@ async function attemptExport(allowUnresolved=false){
  }
  exporting=true;const button=find('#loc-export');button.disabled=true;root.inert=true;setNotice('正在保存交付快照并导出…');
  try{await saveQueue.catch(()=>{});const data=await packet(unresolved?'draft':'ready');await exportPackage(data,Boolean(unresolved&&allowUnresolved));}
- catch(error){setNotice('导出失败，当前编辑保留：'+String(error)+(nativeApp?'':'。请通过 serve.py 启动本地编辑器。'));}
+ catch(error){MidaDiagnostics.report(error);setNotice('导出失败，当前编辑保留：'+String(error)+(nativeApp?'':'。请通过 serve.py 启动本地编辑器。'));}
  finally{exporting=false;root.inert=Boolean(clearingCache);updateSummary();}
 }
 find('#loc-export').addEventListener('click',()=>attemptExport());
@@ -1276,7 +1290,7 @@ function showClearCache(){
    localStorage.removeItem(spacePreferenceKey);localStorage.removeItem(skippedUpdateKey);knownSpaces.clear();originalSpaceLanguage=null;
    workspaceStore=new LocalizationWorkspaceStore();await workspaceStore.load();saveQueue=Promise.resolve();editRevision++;restoreWorkspace(null);storageReady=true;
    clearingCache=false;closeDialog();setNotice('所有空间的数据、历史自动保存、备份和视频缓存已清空。');
-  }catch(error){
+  }catch(error){MidaDiagnostics.report(error);
    restoreWorkspace(null);storageReady=false;progress.textContent='清空未全部完成：'+String(error.message||error)+'。已停止自动保存，请重试清空；不会将旧内容重新写回。';confirm.disabled=false;cancel.disabled=false;
   }finally{clearingCache=false;root.inert=false;renderSpaces();}
  });
@@ -1293,6 +1307,7 @@ find('#loc-settings').addEventListener('click',()=>{
  for(const [value,label] of [['right','右侧（默认）'],['bottom','下方']]){const option=element('option','',label);option.value=value;placement.append(option);}
  placement.value=state.previewPlacement;placement.addEventListener('change',()=>{state.previewPlacement=placement.value;renderPreviewLayout();changeSaved();});videoLine.append(placement);
  content.append(line,videoLine,element('p','helper','视频默认隐藏，点击“查看视频”显示。拖动分隔线调整大小，拖到最右侧（下方布局拖到底部）自动收起并暂停播放。视频按原比例完整显示；位置与大小随工作区保存。'),element('p','helper','支持语言、忽略包和角色映射来自 Unity 导出包，在翻译 App 中只读。'));
+ const diagnostics=element('button','','日志与诊断');diagnostics.addEventListener('click',()=>{void MidaDiagnostics.show(openDialog('日志与诊断'));});content.append(diagnostics);
  const backups=element('button','','历史记录与自动备份');backups.addEventListener('click',showBackups);content.append(backups);
  const clearCache=element('button','danger','清空所有的缓存');clearCache.addEventListener('click',showClearCache);content.append(clearCache);
  if(nativeApp){const updates=element('button','','检查应用更新');updates.addEventListener('click',async()=>{await checkForAppUpdate();if(updateInfo?.available)showAppUpdate();else setNotice(find('#loc-app-update').textContent);});content.append(updates);}
@@ -1306,6 +1321,7 @@ function releaseSummary(version,notes){
  };
  return previous[String(version).replace(/^v/,'')]||(typeof notes==='string'?notes.replace(/^# [^\n]*\n+/,'').trim():'')||'此版本包含功能改进和修复。';
 }
+find('#loc-feedback').addEventListener('click',()=>{void MidaFeedback.open(openDialog('问题反馈'));});
 find('#loc-about').addEventListener('click',()=>{
  if(importInProgress||switchingSpace||clearingCache||historyBusy||appUpdateInstalling)return;
  const content=openDialog('关于'),navigation=element('nav','about-nav'),repository=element('section'),instructions=element('section');navigation.setAttribute('aria-label','关于模块');
@@ -1328,7 +1344,7 @@ find('#loc-about').addEventListener('click',()=>{
     item.append(element('p','helper',release.tag+(release.publishedAt&&!Number.isNaN(date.getTime())?' · '+date.toLocaleString():'')));
     item.append(element('pre','',releaseSummary(release.tag,release.notes)));history.append(item);
    }
-  }catch(error){if(history.isConnected)history.replaceChildren(element('p','helper pending','无法加载更新历史：'+String(error.message||error)+'。可以重试，使用说明仍可查看。'));}
+  }catch(error){MidaDiagnostics.report(error);if(history.isConnected)history.replaceChildren(element('p','helper pending','无法加载更新历史：'+String(error.message||error)+'。可以重试，使用说明仍可查看。'));}
   finally{retry.disabled=false;}
  };
  retry.addEventListener('click',loadHistory);
@@ -1337,6 +1353,15 @@ find('#loc-about').addEventListener('click',()=>{
  selectModule(true);loadHistory();
 });
 if(globalThis.Tweak){const tweak=new Tweak({container:root,onChange:renderAll});tweak.addSelect(state,'layout',{label:'对话布局',options:['双栏对照','上下排列']});tweak.addToggle(state,'menu',{label:'显示任务菜单'});}
+initializeWorkspace=MidaDiagnostics.operation('workspace.initialize',initializeWorkspace);
+switchSpace=MidaDiagnostics.operation('workspace.switch_space',switchSpace);
+saveWorkspace=MidaDiagnostics.operation('workspace.save',saveWorkspace);
+planMerge=MidaDiagnostics.operation('package.merge_plan',planMerge);
+validateDialogueData=MidaDiagnostics.operation('package.validate',validateDialogueData);
+packet=MidaDiagnostics.operation('package.prepare_export',packet);
+exportPackage=MidaDiagnostics.operation('package.export',exportPackage);
+runTranslationJson=MidaDiagnostics.operation('translation_json.operation',runTranslationJson);
+checkForAppUpdate=MidaDiagnostics.operation('updater.check',checkForAppUpdate);
 renderAll();
 const workspaceInitialization=initializeWorkspace();
 if(nativeApp){
@@ -1348,7 +1373,7 @@ if(nativeApp){
  nativeApp.event.listen('mida-exit-requested',async()=>{
   if(closing)return;closing=true;
   try{await workspaceInitialization;if(jsonBusy||historyBusy||importInProgress||switchingSpace||appUpdateInstalling||clearingCache){setNotice('当前操作尚未完成，请稍后再关闭窗口。');return;}if(!historyView&&state.modified)await saveWorkspace();await invokeNative('finish_exit');}
-  catch(error){setNotice('退出前保存未完成，已保留窗口：'+String(error));}
+  catch(error){MidaDiagnostics.report(error);setNotice('退出前保存未完成，已保留窗口：'+String(error));}
   finally{closing=false;}
  }).catch(error=>setNotice('退出保护初始化失败：'+String(error)));
 }

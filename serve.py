@@ -3,8 +3,13 @@ import json
 import os
 import re
 import sqlite3
+import sys
 import shutil
 import threading
+import time
+import traceback
+import diagnostics
+import feedback_proxy
 import zipfile
 import zlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -72,6 +77,13 @@ def validate_delivery(document, allow_unresolved=False):
 class EditorServer(ThreadingHTTPServer):
     def __init__(self, port, output_directory):
         self.output_directory = output_directory.resolve()
+        try:
+            diagnostics.LOGGER = diagnostics.RunLog()
+        except OSError:
+            diagnostics.LOGGER = None
+        diagnostics.instrument(MediaStore, ['import_stream', 'commit', 'relocate', 'discard', 'info', 'cleanup_garbage', 'clear_all'])
+        diagnostics.instrument(ImportJobs, ['start', 'access', 'finish'])
+        diagnostics.instrument(sys.modules[__name__], ['validate_delivery', 'write_package'])
         self.media_store = MediaStore(self.output_directory)
         self.space_stores = {}
         self.space_lock = threading.Lock()
@@ -110,7 +122,7 @@ class EditorHandler(BaseHTTPRequestHandler):
         self.send_header('Cache-Control', 'no-store')
         self.send_header('X-Content-Type-Options', 'nosniff')
         self.send_header('Cross-Origin-Resource-Policy', 'same-origin')
-        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; frame-ancestors 'none'; object-src 'none'; base-uri 'none'")
+        self.send_header('Content-Security-Policy', "default-src 'self'; script-src 'self' 'unsafe-inline'; style-src 'self' 'unsafe-inline'; connect-src 'self'; img-src 'self' data: blob:; frame-ancestors 'none'; object-src 'none'; base-uri 'none'")
         for name, value in (headers or {}).items():
             self.send_header(name, value)
         self.end_headers()
@@ -137,7 +149,62 @@ class EditorHandler(BaseHTTPRequestHandler):
     def do_HEAD(self):
         self.do_GET()
 
+    def handle_one_request(self):
+        context = diagnostics.TRACE.set('')
+        started = time.monotonic()
+        self._diagnostic_status = 0
+        try:
+            super().handle_one_request()
+        except Exception as error:
+            diagnostics.record('http.unhandled_exception', 'ERROR', errorType=type(error).__name__, stack=''.join(traceback.format_tb(error.__traceback__)))
+            raise
+        finally:
+            path = urlsplit(getattr(self, 'path', '')).path
+            if path.startswith('/api/') and not path.startswith('/api/diagnostics/'):
+                operation = getattr(self, 'headers', {}).get('X-Diagnostics-Operation', '')
+                if not re.fullmatch(r'[0-9a-f-]{36}', operation):
+                    operation = diagnostics.TRACE.get() or str(uuid4())
+                diagnostics.record('http.' + path.replace('/api/', '').split('?')[0], 'INFO' if 0 < self._diagnostic_status < 400 else 'ERROR', operationId=operation, status=self._diagnostic_status, durationMs=round((time.monotonic()-started)*1000))
+            diagnostics.TRACE.reset(context)
+
+    def parse_request(self):
+        parsed = super().parse_request()
+        if parsed:
+            operation = self.headers.get('X-Diagnostics-Operation', '')
+            if not re.fullmatch(r'[0-9a-f-]{36}', operation):
+                operation = str(uuid4())
+            diagnostics.TRACE.set(operation)
+        return parsed
+
+    def send_response(self, code, message=None):
+        self._diagnostic_status = code
+        super().send_response(code, message)
+
+    def log_message(self, format, *args):
+        # Raw URLs can contain paths and user supplied query parameters.
+        pass
+
     def do_GET(self):
+        if urlsplit(self.path).path.startswith('/api/diagnostics/'):
+            if not self.valid_host() or not self.valid_media_origin():
+                self.reply(403, {'error': '仅允许本机编辑器读取日志'})
+                return
+            logger = diagnostics.LOGGER
+            if logger is None:
+                self.reply(503, {'error': '日志目录不可用'})
+                return
+            try:
+                if urlsplit(self.path).path == '/api/diagnostics/info':
+                    self.reply(200, logger.info())
+                elif urlsplit(self.path).path == '/api/diagnostics/snapshot':
+                    if logger.failure:
+                        raise OSError(logger.failure)
+                    self.reply(200, {'text': logger.snapshot()})
+                else:
+                    self.reply(404, {'error': '日志入口不存在'})
+            except OSError:
+                self.reply(500, {'error': '本机运行日志读取失败'})
+            return
         if urlsplit(self.path).path == '/api/repository-history':
             if not self.valid_host() or not self.valid_media_origin():
                 self.reply(403, {'error': '仅允许本机编辑器读取版本历史'})
@@ -196,7 +263,7 @@ class EditorHandler(BaseHTTPRequestHandler):
             self.reply(200, (ROOT / 'prototype.html').read_bytes(), 'text/html; charset=utf-8')
         elif path == '/app-icon.svg':
             self.reply(200, (ROOT / 'app-icon.svg').read_bytes(), 'image/svg+xml')
-        elif path in ('/workspace-store.js', '/workload.js', '/translation-json.js', '/preview-player.js', '/import-worker.js'):
+        elif path in ('/diagnostics.js', '/feedback.js', '/workspace-store.js', '/workload.js', '/translation-json.js', '/preview-player.js', '/import-worker.js'):
             try:
                 self.reply(200, (ROOT / path[1:]).read_bytes(), 'text/javascript; charset=utf-8')
             except FileNotFoundError:
@@ -256,6 +323,38 @@ class EditorHandler(BaseHTTPRequestHandler):
                 self.close_connection = True
 
     def do_POST(self):
+        path = urlsplit(self.path).path
+        if path in ('/api/diagnostics/write', '/api/feedback'):
+            if not self.valid_host() or self.headers.get_all('Origin') != [self.server.origin]:
+                self.reply(403, {'error': '不允许跨站提交'})
+                return
+            try:
+                lengths = self.headers.get_all('Content-Length', [])
+                if len(lengths) != 1 or not lengths[0].isdigit():
+                    raise ValueError('请求长度无效')
+                length = int(lengths[0])
+                if not 0 < length <= (14 * 1024 * 1024 if path == '/api/feedback' else 256 * 1024):
+                    raise ValueError('请求超出容量')
+                value = json.loads(self.rfile.read(length))
+                if path == '/api/feedback':
+                    self.reply(200, feedback_proxy.dispatch(value))
+                else:
+                    events = value.get('events') if isinstance(value, dict) else None
+                    if not isinstance(events, list) or len(events) > 128 or any(not isinstance(v, dict) for v in events):
+                        raise ValueError('日志批次无效')
+                    if diagnostics.LOGGER is None:
+                        raise OSError('日志不可用')
+                    for row in events:
+                        row['source'] = 'frontend'
+                        diagnostics.LOGGER.write(row)
+                    if diagnostics.LOGGER.failure:
+                        raise OSError(diagnostics.LOGGER.failure)
+                    self.reply(200, {'saved': True})
+            except (ValueError, UnicodeError):
+                self.reply(400, {'error': '请求格式或响应无效；反馈写入须核对原请求'})
+            except (OSError, TimeoutError):
+                self.reply(502, {'error': '请求未确认，请核对原反馈请求或检查日志目录'})
+            return
         # Progress/cancel must remain reachable while upload holds the operation lock.
         if self.path in ('/api/import/start', '/api/import/status', '/api/import/cancel'):
             self.handle_import_control()

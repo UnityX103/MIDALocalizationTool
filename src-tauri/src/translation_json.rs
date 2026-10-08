@@ -30,7 +30,8 @@ fn validate_path(path: &Path) -> Result<(), String> {
 }
 
 #[tauri::command]
-pub async fn choose_translation_json(app: tauri::AppHandle) -> Result<Option<Value>, String> {
+pub async fn choose_translation_json(app: tauri::AppHandle, operation_id: Option<String>) -> Result<Option<Value>, String> {
+    crate::diagnostics::logged("choose_translation_json", operation_id, async {
     tauri::async_runtime::spawn_blocking(move || {
         let selected = app.dialog().file().set_title("导入候选译文 JSON")
             .add_filter("译文 JSON", &["json"]).blocking_pick_file();
@@ -47,10 +48,13 @@ pub async fn choose_translation_json(app: tauri::AppHandle) -> Result<Option<Val
         let text = String::from_utf8(bytes).map_err(|_| "译文 JSON 必须使用 UTF-8 编码")?;
         Ok(Some(json!({"fileName": path.file_name().unwrap_or_default().to_string_lossy(), "text": text})))
     }).await.map_err(|error| error.to_string())?
+
+    }).await
 }
 
 #[tauri::command]
-pub async fn choose_translation_directory(app: tauri::AppHandle) -> Result<Option<String>, String> {
+pub async fn choose_translation_directory(app: tauri::AppHandle, operation_id: Option<String>) -> Result<Option<String>, String> {
+    crate::diagnostics::logged("choose_translation_directory", operation_id, async {
     tauri::async_runtime::spawn_blocking(move || {
         let selected = app.dialog().file().set_title("选择原文导出目录").blocking_pick_folder();
         let Some(selected) = selected else { return Ok(None); };
@@ -59,10 +63,13 @@ pub async fn choose_translation_directory(app: tauri::AppHandle) -> Result<Optio
         if !path.is_dir() { return Err("请选择有效的导出目录".into()); }
         Ok(Some(path.to_string_lossy().into_owned()))
     }).await.map_err(|error| error.to_string())?
+
+    }).await
 }
 
 #[tauri::command]
-pub async fn export_translation_json(text: String, file_name: String, directory: String) -> Result<Option<Value>, String> {
+pub async fn export_translation_json(text: String, file_name: String, directory: String, operation_id: Option<String>) -> Result<Option<Value>, String> {
+    crate::diagnostics::logged("export_translation_json", operation_id, async {
     tauri::async_runtime::spawn_blocking(move || {
         validate_export(&text)?;
         let safe_name = if file_name.len() <= 160 && file_name.ends_with(".json")
@@ -83,4 +90,6 @@ pub async fn export_translation_json(text: String, file_name: String, directory:
         temporary.persist_noclobber(&path).map_err(|error| error.to_string())?;
         Ok(Some(json!({"path": path.to_string_lossy()})))
     }).await.map_err(|error| error.to_string())?
+
+    }).await
 }
