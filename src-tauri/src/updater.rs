@@ -7,14 +7,35 @@ use tauri_plugin_updater::{Update, UpdaterExt};
 
 const REPOSITORY: &str = "https://cnb.cool/nanzhaigame-xpy/MIDALocalizationTool";
 
+async fn bounded_metadata(mut response: reqwest::Response) -> Result<Vec<u8>, String> {
+    const LIMIT: usize = 4 * 1024 * 1024;
+    if response.content_length().is_some_and(|length| length > LIMIT as u64) {
+        return Err("版本清单超过 4 MiB 上限".into());
+    }
+    let mut bytes = Vec::new();
+    while let Some(chunk) = response.chunk().await.map_err(|error| error.to_string())? {
+        if chunk.len() > LIMIT.saturating_sub(bytes.len()) {
+            return Err("版本清单超过 4 MiB 上限".into());
+        }
+        bytes.extend_from_slice(&chunk);
+    }
+    Ok(bytes)
+}
+
+async fn fetch_releases(client: &reqwest::Client) -> Result<Vec<Value>, String> {
+    let response = client.get(format!("{REPOSITORY}/-/releases?page=1&page_size=100"))
+        .header("Accept", "application/vnd.cnb.api+json").send().await
+        .map_err(|error| format!("无法连接 CNB：{error}"))?
+        .error_for_status().map_err(|error| error.to_string())?;
+    serde_json::from_slice(&bounded_metadata(response).await?)
+        .map_err(|error| format!("版本清单无效：{error}"))
+}
+
 #[tauri::command]
 pub async fn repository_history() -> Result<Value, String> {
     let client = reqwest::Client::builder().timeout(Duration::from_secs(20))
         .user_agent("MIDA-Localization-About").build().map_err(|error| error.to_string())?;
-    let mut releases: Vec<Value> = client.get(format!("{REPOSITORY}/-/releases?page=1&page_size=100"))
-        .header("Accept", "application/vnd.cnb.api+json").send().await
-        .map_err(|error| format!("无法连接 CNB：{error}"))?.error_for_status().map_err(|error| error.to_string())?
-        .json().await.map_err(|error| format!("版本历史无效：{error}"))?;
+    let mut releases: Vec<Value> = fetch_releases(&client).await?;
     releases.retain(|release| release["draft"] != true && release["prerelease"] != true && release["tag_name"].is_string());
     releases.sort_by(|left, right| {
         let date = |release: &Value| release["published_at"].as_str().or(release["created_at"].as_str()).unwrap_or("").to_owned();
@@ -51,10 +72,7 @@ pub async fn check_app_update(app: tauri::AppHandle) -> Result<Value, String> {
     *state.pending.lock().map_err(|error| error.to_string())? = None;
     let client = reqwest::Client::builder().timeout(Duration::from_secs(20))
         .user_agent("MIDA-Localization-Updater").build().map_err(|error| error.to_string())?;
-    let releases: Vec<Value> = client.get(format!("{REPOSITORY}/-/releases?page=1&page_size=100"))
-        .header("Accept", "application/vnd.cnb.api+json").send().await
-        .map_err(|error| format!("无法连接 CNB：{error}"))?.error_for_status().map_err(|error| error.to_string())?
-        .json().await.map_err(|error| format!("版本清单无效：{error}"))?;
+    let releases: Vec<Value> = fetch_releases(&client).await?;
     let mut candidates = releases.iter().filter(|release| release["draft"] != true && release["prerelease"] != true)
         .filter_map(|release| {
             let version = semver::Version::parse(release["tag_name"].as_str()?.trim_start_matches('v')).ok()?;

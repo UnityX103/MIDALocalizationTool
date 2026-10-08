@@ -92,7 +92,15 @@ class MediaStore:
                     project_id TEXT NOT NULL, part_name TEXT NOT NULL
                 );
             ''')
+            columns = {row['name'] for row in database.execute('PRAGMA table_info(imports)')}
+            for name, definition in [('owner', "TEXT NOT NULL DEFAULT ''"), ('protected', 'INTEGER NOT NULL DEFAULT 0')]:
+                if name not in columns:
+                    database.execute(f'ALTER TABLE imports ADD COLUMN {name} {definition}')
+            if 'owner' not in columns:
+                # Previous versions could have durable browser references without a lease.
+                database.execute("UPDATE imports SET protected=1 WHERE state='staged'")
             database.commit()
+            self.cleanup_abandoned(database)
             self.cleanup_garbage(database)
 
     @contextmanager
@@ -143,13 +151,19 @@ class MediaStore:
             result[part_name] = row['revision'] if row else 0
         return result
 
-    def import_stream(self, source, length, progress=lambda fraction, phase: None):
+    def import_stream(self, source, length, progress=lambda fraction, phase: None, owner=""):
+        if not opaque_id(owner):
+            raise MediaError("媒体客户端标识无效")
         if type(length) is not int or not 0 < length <= MAX_ZIP_BYTES:
             raise MediaError('上传长度为空或超过 2 GiB', 413)
         token = uuid4().hex
-        with self.locked():
+        with self.locked() as database:
+            self.cleanup_abandoned(database)
             directory = self.stage_directory(token)
             directory.mkdir()
+            database.execute('INSERT INTO imports (token,project_id,state,parts,records,baseline,created,owner) VALUES (?,?,?,?,?,?,?,?)',
+                             (token, '', 'uploading', '[]', '{}', '{}', time.time(), owner))
+            database.commit()
         upload = directory / 'upload.zip'
         registered = False
         try:
@@ -185,17 +199,60 @@ class MediaStore:
             progress(1, '校验完成')
             with self.locked() as database:
                 baseline = self.revisions(database, project_id, parts)
-                database.execute('INSERT INTO imports VALUES (?, ?, ?, ?, ?, ?, ?)',
-                                 (token, project_id, 'staged', json.dumps(parts), json.dumps(records),
-                                  json.dumps(baseline), time.time()))
+                database.execute("UPDATE imports SET project_id=?,state='staged',parts=?,records=?,baseline=?,created=? WHERE token=?",
+                                 (project_id, json.dumps(parts), json.dumps(records), json.dumps(baseline), time.time(), token))
                 database.commit()
                 registered = True
             result['mediaImportToken'] = token
             return result
         finally:
             if not registered:
-                with self.locked():
+                with self.locked() as database:
                     shutil.rmtree(directory, ignore_errors=True)
+                    database.execute('DELETE FROM imports WHERE token=?', (token,))
+                    database.commit()
+
+    def cleanup_abandoned(self, database):
+        cutoff = time.time() - 24 * 3600
+        # Protected tokens can be referenced by IndexedDB even after a long offline period.
+        rows = database.execute("SELECT token FROM imports WHERE state IN ('uploading','staged') AND protected=0 AND created<?", (cutoff,)).fetchall()
+        for row in rows:
+            directory = self.stage_directory(row['token'])
+            if directory.exists():
+                shutil.rmtree(directory)
+            database.execute("UPDATE imports SET state='discarded' WHERE token=?", (row['token'],))
+        known = {row['token'] for row in database.execute('SELECT token FROM imports')}
+        for directory in self.staging.iterdir():
+            if opaque_id(directory.name) and directory.name not in known and not directory.is_symlink() and directory.is_dir() and directory.stat().st_mtime < cutoff:
+                shutil.rmtree(directory)
+        database.commit()
+
+    def lease(self, token, owner, protect=False):
+        if not opaque_id(owner) or type(protect) is not bool:
+            raise MediaError('媒体租约参数无效')
+        with self.locked() as database:
+            row = self.get_import(database, token)
+            if row['state'] != 'staged' or row['owner'] not in ('', owner):
+                raise MediaError('媒体暂存不可续期或不属于当前客户端', 409)
+            database.execute('UPDATE imports SET owner=?,created=?,protected=MAX(protected,?) WHERE token=?', (owner, time.time(), int(protect), token))
+            database.commit()
+            self.cleanup_abandoned(database)
+            return {'ok': True}
+
+    def reconcile(self, owner, tokens):
+        if not opaque_id(owner) or not isinstance(tokens, list) or len(tokens) > 1000 or any(not opaque_id(token) for token in tokens):
+            raise MediaError('媒体恢复参数无效')
+        with self.locked() as database:
+            for token in tokens:
+                database.execute("UPDATE imports SET protected=1 WHERE token=? AND state='staged'", (token,))
+            # Unfinished prepare operations are reclaimable once this client's durable
+            # workspace has been inspected. A grace period protects concurrent commits.
+            for row in database.execute("SELECT token,created FROM imports WHERE owner=? AND state='staged' AND protected=1", (owner,)).fetchall():
+                if row['token'] not in tokens and row['created'] < time.time() - 60:
+                    database.execute('UPDATE imports SET protected=0,created=0 WHERE token=?', (row['token'],))
+            database.commit()
+            self.cleanup_abandoned(database)
+            return {'ok': True}
 
     def get_import(self, database, token):
         if not opaque_id(token):
@@ -326,8 +383,8 @@ class MediaStore:
             baseline = destination.revisions(target_database, row['project_id'], json.loads(row['parts']))
             source.rename(target)
             try:
-                target_database.execute('INSERT INTO imports VALUES (?, ?, ?, ?, ?, ?, ?)',
-                    (token, row['project_id'], 'staged', row['parts'], row['records'], json.dumps(baseline), row['created']))
+                target_database.execute('INSERT INTO imports (token,project_id,state,parts,records,baseline,created,owner,protected) VALUES (?,?,?,?,?,?,?,?,?)',
+                    (token, row['project_id'], 'staged', row['parts'], row['records'], json.dumps(baseline), row['created'], row['owner'], row['protected']))
                 target_database.commit()
                 source_database.execute("UPDATE imports SET state='discarded' WHERE token=?", (token,))
                 source_database.commit()

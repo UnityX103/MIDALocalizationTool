@@ -1,6 +1,6 @@
 [package]
 name = "mida-localization"
-version = "1.0.7"
+version = "1.0.8"
 edition = "2021"
 description = "MIDA 本地化翻译编辑器"
 
@@ -8,7 +8,7 @@ description = "MIDA 本地化翻译编辑器"
 tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
-tauri = { version = "=2.11.1", features = [] }
+tauri = { version = "=2.11.6", features = [] }
 tauri-plugin-dialog = "=2.7.2"
 tauri-plugin-single-instance = "=2.4.4"
 tauri-plugin-updater = "=2.11.0"
@@ -26,3 +26,6 @@ codegen-units = 1
 lto = true
 opt-level = "s"
 strip = true
+
+[patch.crates-io]
+tauri-plugin-updater = { path = "vendor/tauri-plugin-updater" }

@@ -1,6 +1,6 @@
 # MIDA 本地化编辑器
 
-独立的 macOS / Windows 桌面本地化编辑项目，使用 Tauri 2、HTML/JavaScript 和 Rust。当前源码版本 **1.0.1**；应用通过 ZIP 与 Unity 交换数据，不依赖 Unity 工程目录、Excel 或运行中的 Unity Editor。
+独立的 macOS / Windows 桌面本地化编辑项目，使用 Tauri 2、HTML/JavaScript 和 Rust。当前源码版本 **1.0.8**；应用通过 ZIP 与 Unity 交换数据，不依赖 Unity 工程目录、Excel 或运行中的 Unity Editor。
 
 远端仓库：`https://cnb.cool/nanzhaigame-xpy/MIDALocalizationTool`。
 
@@ -89,6 +89,15 @@ Windows 安装程序未进行 Authenticode 签名，尚未在真实 Windows 环�
 导入显示分阶段进度，期间锁定其他编辑操作，可取消读取、校验和合并；最终原子保存阶段短暂禁用取消。单次支持最多 200 个片段。
 
 文件结构、版本及容量边界见 [ZIP 协议](docs/package-format.md)。Unity 的录制实现仍属于 Unity 仓库，不移动到本项目。
+
+### 大工作区与持续生产
+
+- 词条列表每页显示最多 100 句，搜索输入停止 180 毫秒后刷新；「下一条」和未确定草稿定位会自动切换到对应页。
+- 导入前检查合并后整个语言空间的容量：最多 1000 个片段、100000 条词条。拒绝超限不会改变现有任务或媒体。
+- 当前存档损坏时，仍可从「偏好 → 历史记录与自动备份」恢复有效备份，或切换其他健康空间；恢复前单独保护原始存档。浏览器既有超限存档可以按完整片段拆分恢复，其他分组作为保留备份访问。
+- 点击底部工作量问号，再选择「工作量归档与继续生产」，可保存旧台账并创建新台账。累计字数和历史待交接状态保留；旧台账可导出固定 ZIP 和完整台账 JSON。
+
+容量、恢复、归档和媒体暂存的操作边界见 [生产连续性说明](docs/production-reliability.md)。
 
 ## 保存与备份
 

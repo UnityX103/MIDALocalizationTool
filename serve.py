@@ -300,7 +300,7 @@ class EditorHandler(BaseHTTPRequestHandler):
         if not self.valid_host() or self.headers.get_all('Origin') != [self.server.origin]:
             self.reply(403, {'error': '不允许跨站操作'})
             return
-        if self.path not in ('/api/export', '/api/import', '/api/media/commit', '/api/media/discard', '/api/media/info', '/api/media/relocate', '/api/cache/clear'):
+        if self.path not in ('/api/export', '/api/import', '/api/media/commit', '/api/media/discard', '/api/media/info', '/api/media/relocate', '/api/media/lease', '/api/media/reconcile', '/api/cache/clear'):
             self.reply(404, {'error': '接口不存在'})
             return
         expected_type = 'application/zip' if self.path == '/api/import' else 'application/json'
@@ -325,7 +325,7 @@ class EditorHandler(BaseHTTPRequestHandler):
                 result = None
                 try:
                     progress = lambda fraction, phase: jobs.report(identifier, space, fraction, phase)
-                    result = self.media_store.import_stream(self.rfile, length, progress)
+                    result = self.media_store.import_stream(self.rfile, length, progress, self.headers.get('X-Media-Client', ''))
                     progress(1, '校验完成')
                     self.reply(200, result)
                 except (ValueError, OSError):
@@ -354,6 +354,16 @@ class EditorHandler(BaseHTTPRequestHandler):
                     self.server.space_stores.clear()
                     self.server.media_store = MediaStore(self.server.output_directory)
                 self.reply(200, {'ok': True})
+                return
+            if self.path == '/api/media/lease':
+                if not isinstance(request, dict) or set(request) != {'token','owner','protect'}:
+                    raise ValueError('媒体租约参数无效')
+                self.reply(200, self.media_store.lease(request['token'], request['owner'], request['protect']))
+                return
+            if self.path == '/api/media/reconcile':
+                if not isinstance(request, dict) or set(request) != {'owner','tokens'}:
+                    raise ValueError('媒体恢复参数无效')
+                self.reply(200, self.media_store.reconcile(request['owner'], request['tokens']))
                 return
             if self.path == '/api/media/relocate':
                 if not isinstance(request, dict) or set(request) != {'token', 'spaceId'} or not isinstance(request['spaceId'], str):

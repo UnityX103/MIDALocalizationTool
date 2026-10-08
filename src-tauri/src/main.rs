@@ -169,10 +169,12 @@ fn finish_exit(app: tauri::AppHandle) {
 
 #[tauri::command]
 async fn workspace_read(app: tauri::AppHandle, store: String, key: String, space_id: Option<String>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     let state = app.state::<NativeState>();
     let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
     let root = space_root(&app, space_id.as_deref())?;
     workspace::read(&root, &store, &key)
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -215,13 +217,56 @@ async fn workspace_save(app: tauri::AppHandle, mut snapshot: Value, expected_rev
 }
 
 #[tauri::command]
+async fn workspace_save_entry(app: tauri::AppHandle, task: Value, task_index: usize, project_id: String, entry: Value, view: Value, ledger_delta: Value, expected_revision: u64, space_id: Option<String>, expected_cache_epoch: u64) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<NativeState>();let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
+        if expected_cache_epoch != state.cache_epoch.load(Ordering::SeqCst) { return Err("缓存状态已改变".into()); }
+        if space_id.as_deref().filter(|value| !value.is_empty()).is_some_and(|value| task["language"] != value) { return Err("片段语言不匹配".into()); }
+        workspace::save_entry(&space_root(&app, space_id.as_deref())?, task, task_index, &project_id, entry, view, ledger_delta, expected_revision)
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
 async fn workspace_save_task(app: tauri::AppHandle, task: Value, task_index: usize, project_id: String, view: Value, confirmed_keys: Vec<String>, expected_revision: u64, space_id: Option<String>, expected_cache_epoch: u64) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
     let state = app.state::<NativeState>();
     let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
     if expected_cache_epoch != state.cache_epoch.load(Ordering::SeqCst) { return Err("缓存已被清空，旧页面不会重新保存数据".into()); }
     if space_id.as_deref().filter(|value| !value.is_empty()).is_some_and(|value| task["language"].as_str() != Some(value)) { return Err("片段目标语言不匹配".into()); }
     let root = space_root(&app, space_id.as_deref())?;
     workspace::save_task(&root, task, task_index, &project_id, view, confirmed_keys, expected_revision)
+    }).await.map_err(|error| error.to_string())?
+}
+
+
+#[tauri::command]
+async fn workspace_archive_ledger(app: tauri::AppHandle, archive: Value, space_id: Option<String>, expected_revision: u64, expected_cache_epoch: u64) -> Result<(), String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<NativeState>();let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
+        if expected_cache_epoch != state.cache_epoch.load(Ordering::SeqCst) { return Err("缓存状态已改变".into()); }
+        workspace::archive_ledger(&space_root(&app, space_id.as_deref())?, archive, expected_revision)
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn workspace_recovery(app: tauri::AppHandle, space_id: Option<String>) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<NativeState>();
+        let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
+        workspace::recovery_info(&space_root(&app, space_id.as_deref())?)
+    }).await.map_err(|error| error.to_string())?
+}
+
+#[tauri::command]
+async fn workspace_recover(app: tauri::AppHandle, snapshot: Value, token: String, space_id: Option<String>, expected_cache_epoch: u64) -> Result<Value, String> {
+    tauri::async_runtime::spawn_blocking(move || {
+        let state = app.state::<NativeState>();
+        let _guard = state.workspace_lock.lock().map_err(|error| error.to_string())?;
+        if expected_cache_epoch != state.cache_epoch.load(Ordering::SeqCst) { return Err("缓存状态已改变，请重新打开恢复列表".into()); }
+        if space_id.as_deref().filter(|value| !value.is_empty()).is_some_and(|value| snapshot["tasks"].as_array().is_none_or(|tasks| tasks.iter().any(|task| task["language"] != value))) { return Err("恢复语言不匹配".into()); }
+        let mut record = workspace::recover(&space_root(&app, space_id.as_deref())?, snapshot, &token)?;
+        record["cacheEpoch"] = json!(state.cache_epoch.fetch_add(1, Ordering::SeqCst) + 1);Ok(record)
+    }).await.map_err(|error| error.to_string())?
 }
 
 #[tauri::command]
@@ -330,7 +375,7 @@ fn main() {
                 None => tauri::http::Response::builder().status(404).body(Vec::new()).unwrap_or_default(),
             }
         })
-        .invoke_handler(tauri::generate_handler![begin_package_import, cancel_package_import, choose_package, import_dropped_package, export_package, translation_json::choose_translation_json, translation_json::choose_translation_directory, translation_json::export_translation_json, confirm_action, finish_exit, workspace_read, workspace_save, workspace_save_task, workspace_spaces, workspace_cache_epoch, clear_all_cache, relocate_media_import, discard_media_import, get_preview_media, updater::repository_history, updater::check_app_update, updater::install_app_update])
+        .invoke_handler(tauri::generate_handler![begin_package_import, cancel_package_import, choose_package, import_dropped_package, export_package, translation_json::choose_translation_json, translation_json::choose_translation_directory, translation_json::export_translation_json, confirm_action, finish_exit, workspace_read, workspace_archive_ledger, workspace_recovery, workspace_recover, workspace_save, workspace_save_entry, workspace_save_task, workspace_spaces, workspace_cache_epoch, clear_all_cache, relocate_media_import, discard_media_import, get_preview_media, updater::repository_history, updater::check_app_update, updater::install_app_update])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                 if let Ok(mut dropped) = window.state::<NativeState>().dropped_paths.lock() {
