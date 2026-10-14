@@ -160,7 +160,6 @@ pub fn validate_map(
     recording: &str,
     video_hash: &str,
 ) -> Result<(), String> {
-    crate::package::validate_optional_unit_name(map, "chapterName")?;
     if let Some(source_hash) = map.get("sourceHash") {
         if !source_hash.as_str().is_some_and(|hash| hash.len() == 64
             && hash.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))) {
@@ -173,6 +172,21 @@ pub fn validate_map(
             return Err("预览映射 recordedAtUtc 必须是有效非空文本".into());
         }
     }
+    validate_stored_map(map, project, part, recording, video_hash)
+}
+
+// Older desktop versions retained optional recording metadata without validating
+// it. Keep those values intact when opening or saving an existing workspace;
+// required identity, hashes, event ownership and timing remain fully validated.
+// Newly imported ZIPs must still go through validate_map above.
+fn validate_stored_map(
+    map: &Value,
+    project: &str,
+    part: &str,
+    recording: &str,
+    video_hash: &str,
+) -> Result<(), String> {
+    crate::package::validate_optional_unit_name(map, "chapterName")?;
     if map["format"] != "mida-localization-preview"
         || map["formatVersion"].as_u64() != Some(1)
         || map["projectId"] != project
@@ -326,7 +340,7 @@ pub fn validate_references(snapshot: &Value) -> Result<(), String> {
         {
             return Err("工作区媒体引用没有对应任务".into());
         }
-        validate_map(
+        validate_stored_map(
             &preview["map"],
             project,
             part,

@@ -267,7 +267,7 @@ async function checkForAppUpdate({startup=false}={}){
   updatePromptPending=Boolean(updateInfo.available&&(!startup||updateInfo.mandatory||skipped!==updateInfo.version));
   button.textContent=updateInfo.available?(updateInfo.mandatory?'强制更新 ':'发现新版 ')+updateInfo.version+' · 查看更新':updateInfo.development?'开发版 · 不安装更新':'已是最新版本 '+updateInfo.current;
   button.title='';
- }catch(error){MidaDiagnostics.report(error);updateInfo=null;updatePromptPending=false;button.textContent='更新检查失败 · 点击重试';button.title=error.message;}
+ }catch(error){MidaDiagnostics.report(error);updateInfo=null;updatePromptPending=false;button.textContent='更新检查失败 · 点击重试';button.title=error.message;setNotice(error.message);}
  finally{updateChecking=false;button.disabled=false;}
  presentPendingUpdate();
 }
@@ -1358,8 +1358,8 @@ find('#loc-about').addEventListener('click',()=>{
  const repositoryButton=element('button','','仓库'),instructionsButton=element('button','','使用说明');
  const selectModule=showRepository=>{repository.hidden=!showRepository;instructions.hidden=showRepository;repositoryButton.classList.toggle('primary',showRepository);instructionsButton.classList.toggle('primary',!showRepository);repositoryButton.setAttribute('aria-pressed',String(showRepository));instructionsButton.setAttribute('aria-pressed',String(!showRepository));};
  repositoryButton.addEventListener('click',()=>selectModule(true));instructionsButton.addEventListener('click',()=>selectModule(false));const tutorialButton=element('button','','使用教程');tutorialButton.addEventListener('click',()=>{closeDialog();if(workspaceStore.tutorial)MidaTutorial.enter();else MidaTutorial.welcome();});navigation.append(repositoryButton,instructionsButton,tutorialButton);content.append(navigation,repository,instructions);
- repository.append(element('h3','','仓库'),element('code','repository-address','https://cnb.cool/nanzhaigame-xpy/MIDALocalizationTool'));
- const copy=element('button','','复制仓库地址');copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText('https://cnb.cool/nanzhaigame-xpy/MIDALocalizationTool');copy.textContent='已复制';}catch{copy.textContent='复制失败，请选择地址手动复制';}});repository.append(copy,element('p','helper','版本更新历史 · 最近 5 条正式发布（按发布时间倒序）'));
+ repository.append(element('h3','','仓库'),element('code','repository-address','https://github.com/UnityX103/MIDALocalizationTool'));
+ const copy=element('button','','复制仓库地址');copy.addEventListener('click',async()=>{try{await navigator.clipboard.writeText('https://github.com/UnityX103/MIDALocalizationTool');copy.textContent='已复制';}catch{copy.textContent='复制失败，请选择地址手动复制';}});repository.append(copy,element('p','helper','版本更新历史 · 最近 5 条正式发布（按发布时间倒序）'));
  const history=element('div'),retry=element('button','','重新加载');repository.append(history,retry);
  const loadHistory=async()=>{
   retry.disabled=true;history.replaceChildren(element('p','helper','正在读取仓库更新历史…'));
@@ -1426,7 +1426,14 @@ renderAll();
 const workspaceInitialization=initializeWorkspace();
 if(nativeApp){
  workspaceInitialization.then(async()=>{await checkForAppUpdate({startup:true});MidaTutorial.startupFinished();});
- nativeApp.event.listen('mida-update-progress',event=>{const progress=find('#loc-update-progress');if(progress){const {downloaded,total}=event.payload;progress.textContent=total?'正在更新 '+Math.min(100,Math.round(downloaded/total*100))+'%':'正在更新…';}}).catch(()=>{});
+ nativeApp.event.listen('mida-update-progress',event=>{
+  const progress=find('#loc-update-progress');if(!progress)return;
+  const {downloaded,total,source,phase}=event.payload;const channel=source==='cnb'?'CNB 国内节点':'GitHub';
+  if(phase==='connecting')progress.textContent=source==='cnb'?'正在连接 CNB 国内节点…':'国内节点暂不可用，正在尝试 GitHub…';
+  else if(phase==='verifying')progress.textContent='下载完成，正在校验签名…';
+  else if(phase==='installing')progress.textContent='签名校验通过，正在安装更新…';
+  else progress.textContent='正在从 '+channel+' 下载'+(total?' · '+Math.min(100,Math.round(downloaded/total*100))+'%':'…');
+ }).catch(()=>{});
  document.title='MIDA 本地化编辑器';
  nativeApp.event.listen('mida-package-drop',async()=>{await workspaceInitialization;showVersionImport({nativeDrop:true});}).catch(error=>setNotice('拖入监听失败：'+String(error)));
  let closing=false;

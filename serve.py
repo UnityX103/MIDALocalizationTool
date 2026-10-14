@@ -210,16 +210,24 @@ class EditorHandler(BaseHTTPRequestHandler):
                 self.reply(403, {'error': '仅允许本机编辑器读取版本历史'})
                 return
             try:
-                repository = 'https://cnb.cool/nanzhaigame-xpy/MIDALocalizationTool'
-                request = Request(repository + '/-/releases?page=1&page_size=100', headers={
-                    'Accept': 'application/vnd.cnb.api+json', 'User-Agent': 'MIDA-Localization-About'})
-                with urlopen(request, timeout=20) as response:
-                    content = response.read(4 * 1024 * 1024 + 1)
-                if len(content) > 4 * 1024 * 1024:
-                    raise ValueError('版本历史响应超过大小上限')
-                releases = json.loads(content)
-                if not isinstance(releases, list):
-                    raise ValueError('版本历史格式无效')
+                repository = 'https://github.com/UnityX103/MIDALocalizationTool'
+                endpoints = ['https://api.github.com/repos/UnityX103/MIDALocalizationTool/releases?per_page=100',
+                    'https://cnb.cool/nanzhaigame-xpy/MIDALocalizationTool/-/releases?page=1&page_size=100']
+                for index, endpoint in enumerate(endpoints):
+                    try:
+                        request = Request(endpoint, headers={
+                            'Accept': 'application/json', 'User-Agent': 'MIDA-Localization-About'})
+                        with urlopen(request, timeout=10) as response:
+                            content = response.read(4 * 1024 * 1024 + 1)
+                        if len(content) > 4 * 1024 * 1024:
+                            raise ValueError('版本历史响应超过大小上限')
+                        releases = json.loads(content)
+                        if not isinstance(releases, list):
+                            raise ValueError('版本历史格式无效')
+                        break
+                    except (OSError, ValueError):
+                        if index == len(endpoints) - 1:
+                            raise
                 releases = [release for release in releases if isinstance(release, dict)
                     and release.get('draft') is not True and release.get('prerelease') is not True
                     and isinstance(release.get('tag_name'), str)]
