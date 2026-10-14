@@ -34,6 +34,8 @@ ZIP 根目录为 `manifest.json`，每个片段分别位于 `parts/<partName>.js
 
 预览 map 保持 `mida-localization-preview` v1，可增加 `chapterName`；事件可增加 `sourceUnit`，记录真实运行时对话包来源配置名，不从 key 推断。原 `packageName`、`occurrence`、`frame`、`timeMs` 和包名哈希算法不变。`chapterName` / `sourceUnit` 为空、null 或缺省均按无来源信息兼容，不生成章节定位。带章节信息的录制目录可能包含不在本 ZIP 中的片段或章节对话，仍校验完整目录和录制包哈希、事件归属及时间边界，不用当前章节任务替代录制目录。
 
+map 还可保留可选只读录制元数据 `sourceHash`（小写 64 位十六进制 SHA-256 字符串）与 `recordedAtUtc`（非空、无控制字符的文本）。缺省兼容旧录像，存在时浏览器和桌面端校验其类型及内容，不将它们视为未知字段；不由此改写任务语言、版本、词条来源或录制目录，也不代替 `videoSha256`、目录哈希和事件归属校验。
+
 章节“查看视频”只使用当前项目中同时满足 `map.chapterName === task.partName`、`event.sourceUnit === task.partName`、`event.packageName === 目标包名` 的实际事件。一个目标直接定位到其真实片段的 `timeMs`；多个片段或多次出现时提供片段、出现次数与时间的选择，没有映射就不提供跳转。全局、场景、FGUI 和原片段任务不由这些字段自动改成章节。
 
 只含章节 JSON 的数据 ZIP、`previewPartNames: []` 的章节都可先导入，之后再导入匹配的片段录像即可关联。清单原声明随工作区保存；导航和工作区媒体归属以实际 map 来源为准，不依赖最近一个 ZIP 的声明列表。同任务版本可以补充章节元数据而不覆盖本地译文和草稿，已经明确的 `unitKind` 不能静默改变。

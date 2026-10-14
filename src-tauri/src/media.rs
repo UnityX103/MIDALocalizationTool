@@ -161,6 +161,18 @@ pub fn validate_map(
     video_hash: &str,
 ) -> Result<(), String> {
     crate::package::validate_optional_unit_name(map, "chapterName")?;
+    if let Some(source_hash) = map.get("sourceHash") {
+        if !source_hash.as_str().is_some_and(|hash| hash.len() == 64
+            && hash.bytes().all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))) {
+            return Err("预览映射 sourceHash 必须是 SHA-256 文本".into());
+        }
+    }
+    if let Some(recorded_at) = map.get("recordedAtUtc") {
+        if !recorded_at.as_str().is_some_and(|text| !text.trim().is_empty()
+            && !text.chars().any(char::is_control)) {
+            return Err("预览映射 recordedAtUtc 必须是有效非空文本".into());
+        }
+    }
     if map["format"] != "mida-localization-preview"
         || map["formatVersion"].as_u64() != Some(1)
         || map["projectId"] != project

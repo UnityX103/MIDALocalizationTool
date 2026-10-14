@@ -183,9 +183,14 @@ def validate_map(mapping, project_id, part_name, recording_id, video_hash, packa
     fields = {'format', 'formatVersion', 'projectId', 'partName', 'recordingId',
               'hashAlgorithmVersion', 'catalogHash', 'recordedPackagesHash', 'packageNames',
               'recordedPackageNames', 'videoSha256', 'durationMs', 'frameRate', 'events'}
-    if not isinstance(mapping, dict) or not fields <= set(mapping) or set(mapping) - fields - {'chapterName'}:
+    optional_fields = {'chapterName', 'sourceHash', 'recordedAtUtc'}
+    if not isinstance(mapping, dict) or not fields <= set(mapping) or set(mapping) - fields - optional_fields:
         raise ValueError('预览映射字段缺失或包含未知字段')
     validate_optional_unit_name(mapping, 'chapterName')
+    if 'sourceHash' in mapping and not valid_hash(mapping['sourceHash']):
+        raise ValueError('预览映射 sourceHash 必须是 SHA-256 文本')
+    if 'recordedAtUtc' in mapping and not valid_text(mapping['recordedAtUtc']):
+        raise ValueError('预览映射 recordedAtUtc 必须是有效非空文本')
     if (mapping['format'] != 'mida-localization-preview'
             or type(mapping['formatVersion']) is not int or mapping['formatVersion'] != 1
             or mapping['hashAlgorithmVersion'] != 'package-names-v1'
