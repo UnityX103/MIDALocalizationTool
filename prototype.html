@@ -120,7 +120,7 @@ body{padding:12px}
 </head>
 <body>
 <div id="mida-loc-app" aria-label="MIDA 本地化编辑器">
-  <header class="appbar"><span class="wordmark">MIDA <span class="muted">/ LOCALIZATION</span></span><span class="language-info" id="loc-import-language">尚未导入本地化数据</span></header>
+  <header class="appbar"><span class="wordmark">MIDA <span class="muted">/ LOCALIZATION</span></span><span class="language-info" id="loc-import-language">尚未导入本地化数据</span><button id="loc-zip-import" disabled>导入 ZIP</button><input id="loc-zip-file" type="file" accept=".zip,application/zip" hidden></header>
   <div id="loc-history-view" class="appbar" hidden><strong id="loc-history-label">历史记录 · 只读</strong><span><button id="loc-history-return">返回当前最新版本</button> <button id="loc-history-restore" class="danger">回退为此历史记录</button></span></div>
   <div class="workspace-layout" id="loc-workspace-layout">
   <div class="shell">
@@ -573,6 +573,7 @@ find('#loc-work-help').addEventListener('click',()=>{
 });
 function updateSummary(){
  renderSaveState();
+ find('#loc-zip-import').disabled=!storageReady||workspaceStore.tutorial||jsonBusy||Boolean(historyView)||historyBusy||importInProgress||exporting||switchingSpace||clearingCache||appUpdateInstalling||updateDialogActive;
  renderWorkload();
  find('#loc-history-view').hidden=!historyView;
  if(historyView)find('#loc-history-label').textContent='历史记录 · '+new Date(historyView.backup.savedAt).toLocaleString()+' · 只读';
@@ -1138,7 +1139,7 @@ function showVersionImport(initialFile){
     requestId=await invokeNative('begin_package_import');
     if(cancelled)await invokeNative('cancel_package_import',{requestId});
     headline.textContent='正在读取并校验压缩包…';
-    result=await invokeNative('import_dropped_package',{spaceId:importStore.spaceId,requestId});
+    result=await invokeNative(initialFile?.nativePick?'choose_package':'import_dropped_package',{spaceId:importStore.spaceId,requestId});
     if(!isCurrent()){discard(result?.mediaImportToken);return;}if(!result){headline.textContent='已取消选择，已有编辑保持不变。';return;}fileName=result.fileName;
    }else{
     requireValue(file&&/\.zip$/i.test(file.name),'请选择一个 ZIP 压缩包。');
@@ -1235,6 +1236,8 @@ function showVersionImport(initialFile){
  });
  loadArchive(initialFile);
 }
+find('#loc-zip-import').addEventListener('click',()=>{if(nativeApp)showVersionImport({nativePick:true});else{find('#loc-zip-file').value='';find('#loc-zip-file').click();}});
+find('#loc-zip-file').addEventListener('change',event=>{const file=event.target.files[0];if(file)showVersionImport(file);});
 find('#loc-space').addEventListener('change',event=>switchSpace(event.target.value));
 document.addEventListener('dragover',event=>{if([...event.dataTransfer.types].includes('Files')){event.preventDefault();event.dataTransfer.dropEffect='copy';}});
 document.addEventListener('drop',async event=>{if(nativeApp||![...event.dataTransfer.types].includes('Files'))return;event.preventDefault();const files=[...event.dataTransfer.files];if(files.length!==1||!/\.zip$/i.test(files[0].name)){setNotice('请一次拖入一个 ZIP 压缩包，已有编辑保持不变。');return;}await workspaceInitialization;showVersionImport(files[0]);});
