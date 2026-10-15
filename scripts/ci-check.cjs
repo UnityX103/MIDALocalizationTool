@@ -6,7 +6,7 @@ const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 process.chdir(root);
 const run = (command, args) => execFileSync(command, args, { stdio: 'inherit' });
-run(process.platform === 'win32' ? 'python' : 'python3', ['scripts/generate-workload-counting.py', '--check']);
+run(process.platform === 'win32' ? 'python' : 'python3', ['-X', 'utf8', 'scripts/generate-workload-counting.py', '--check']);
 const version = require('../package.json').version;
 const lock = require('../package-lock.json');
 const cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8').split('[package]')[1].split('\n[')[0];
