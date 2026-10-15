@@ -2338,7 +2338,7 @@ dependencies = [
 
 [[package]]
 name = "mida-localization"
-version = "1.0.12"
+version = "1.0.13"
 dependencies = [
  "base64 0.22.1",
  "http-range",
