@@ -6,7 +6,7 @@ const vm = require('node:vm');
 const { webcrypto, createHash } = require('node:crypto');
 
 const root = path.resolve(__dirname, '..');
-const context = vm.createContext({ crypto: webcrypto, TextEncoder, structuredClone, console });
+const context = vm.createContext({ crypto: webcrypto, TextEncoder, structuredClone, console, atob, btoa });
 for (const file of ['workspace-store.js', 'workload.js', 'translation-json.js']) {
   vm.runInContext(fs.readFileSync(path.join(root, file), 'utf8'), context, { filename: file });
 }
@@ -115,9 +115,179 @@ function confirmPreservedDraft(editor) {
   return recorded;
 }
 
-test('han-v1 counts scalar values, excluding punctuation, ASCII, and whitespace', () => {
-  assert.equal(work.count('你好，World 123!\n〇\u{20000}\u{30000}'), 5);
-  assert.equal(work.count(' \t\r\n'), 0);
+test('project counting uses the shared GMX fullwidth acceptance examples', () => {
+  for (const { text, words, units, characterCounts } of JSON.parse(fs.readFileSync(path.join(root, 'fixtures/workload-counting-cases.json'), 'utf8'))) {
+    assert.equal(work.count(text), units ?? words * work.scale, JSON.stringify(text));
+    assert.deepEqual(clone(work.measure(text).characterCounts), characterCounts || {lao:0,khmer:0,myanmar:0});
+  }
+  assert.equal(work.count('你好，World 123!\n〇\u{20000}\u{30000}', 'han-v1'), 5);
+});
+
+async function legacyCountingFixture(countingRule = 'han-v1', sourceText = '你好，Hello 123。') {
+  const current = task(sourceText), manifest = source();
+  const ledger = await work.mergeIncoming(work.create(), manifest, [current]);
+  confirm(ledger, current, 'Hello');
+  const wire = clone(await packet(ledger, [current]));
+  const legacy = clone(ledger);
+  if(countingRule === 'han-v1')delete legacy.countingRule;else legacy.countingRule = countingRule;
+  delete legacy.countingScale;
+  const oldCount = work.count(sourceText, countingRule);
+  const fields = ['progressChars', 'totalChars', 'cumulativeChars', 'handoverChars', 'previousDeliveryDeltaChars', 'sinceSourceUpdateChars'];
+  for (const value of [wire.workload, legacy.deliveries[0].workload]) {
+    value.countingRule = countingRule;delete value.countingScale;delete value.progressCharacterCounts;delete value.totalCharacterCounts;
+    for (const field of fields) value[field] = oldCount;
+  }
+  wire.workload.records[0].chars = oldCount;delete wire.workload.records[0].characterCounts;
+  legacy.records[0].chars = oldCount;delete legacy.records[0].characterCounts;
+  legacy.deliveries[0].fingerprint = await work.fingerprint(wire);
+  work.validatePackage(wire, wire.tasks);
+  work.validateLedger(legacy);
+  return { current, manifest, legacy, wire };
+}
+
+test('project counting migrates old records, preserves old deliveries and accepts their receipts', async () => {
+  const { current, manifest, legacy, wire } = await legacyCountingFixture();
+  const original = clone(legacy);
+  let migrated = work.migrateLedger(clone(legacy));
+  assert.equal(migrated.countingRule, work.rule);
+  assert.equal(migrated.records[0].chars, 6 * work.scale);
+  assert.equal(migrated.records[0].id, original.records[0].id);
+  assert.deepEqual(clone(migrated.deliveries), original.deliveries);
+  migrated = await work.mergeIncoming(migrated, wire, wire.tasks, await work.fingerprint(wire));
+  assert.equal(migrated.records.length, 1);
+  assert.equal(migrated.records[0].chars, 6 * work.scale);
+  const first = await packet(migrated, [current], manifest);
+  assert.equal(first.workload.countingRule, work.rule);
+  assert.equal(first.workload.totalChars, 6 * work.scale);
+  assert.equal(first.workload.cumulativeChars, 6 * work.scale);
+  assert.equal(first.workload.previousDeliveryDeltaChars, 0);
+  assert.notEqual(first.packageId, wire.packageId);
+  assert.equal(first.workload.records[0].id, wire.workload.records[0].id);
+  const relabeled = clone(wire);relabeled.workload.countingRule = work.rule;
+  assert.throws(() => work.validatePackage(relabeled, relabeled.tasks), /计数|计量|进度/);
+  assert.deepEqual(clone(await packet(JSON.parse(JSON.stringify(migrated)), [current])), clone(first));
+  migrated = await work.mergeIncoming(migrated, { ...source(2), workReceipts: [receipt(wire)] }, [current]);
+  assert.equal((await packet(migrated, [current])).workload.handoverChars, 0);
+  assert.equal(migrated.records.length, 1);
+  const bad = clone(legacy);bad.records[0].chars++;
+  assert.throws(() => work.migrateLedger(bad), /计数/);
+  const forged = clone(first);forged.workload.records[0].translation = 'Conflicting record';
+  await assert.rejects(work.mergeIncoming(migrated, forged, forged.tasks, await work.fingerprint(forged)), /工作 ID 内容冲突/);
+});
+
+test('project counting recounts archived exports and acknowledges them after reload', async () => {
+  const { current, legacy, wire } = await legacyCountingFixture();
+  const raw = { format: 'mida-localization-ledger-archive', version: 1, id: 'counting-archive', ledger: clone(legacy), packets: [clone(wire)] };
+  let archive = work.registerArchive(clone(raw));
+  const item = { id: raw.id, ledgerId: legacy.id, chars: 2, pendingChars: 2, recordCount: 1, packetCount: 1, archivedAt: '2026-10-15T00:00:00Z' };
+  let active = work.create();active.archives = [item];active = work.migrateLedger(active);
+  assert.equal(item.chars, 6 * work.scale);
+  assert.equal(item.pendingChars, 6 * work.scale);
+  const [recounted] = await work.recountArchive(archive, item);
+  assert.equal(recounted.workload.countingRule, work.rule);
+  assert.equal(recounted.workload.cumulativeChars, 6 * work.scale);
+  assert.notEqual(recounted.packageId, wire.packageId);
+  assert.equal(raw.packets[0].workload.countingRule, 'han-v1');
+  const persisted = JSON.parse(JSON.stringify(item));
+  archive = work.registerArchive(clone(raw), persisted);
+  const [repeat] = await work.recountArchive(archive, persisted);
+  assert.deepEqual(clone(repeat), clone(recounted));
+  active.archives = [persisted];
+  const forged = clone(repeat);forged.workload.acknowledgedRecordIds = [repeat.workload.records[0].id];forged.workload.handoverChars = 0;
+  work.validatePackage(forged, forged.tasks);
+  await assert.rejects(work.mergeIncoming(active, forged, forged.tasks, await work.fingerprint(forged)), /交付 ID 内容冲突/);
+  active = await work.mergeIncoming(active, { ...source(2), workReceipts: [receipt(repeat)] }, [current]);
+  assert.equal(active.archives[0].pendingChars, 0);
+  assert.equal(active.archives[0].chars, 6 * work.scale);
+});
+
+test('project counting migrates the previous GMX draft and preserves its receipts', async () => {
+  const {legacy, wire, current} = await legacyCountingFixture(work.draftRule, "ก l'ā");
+  let ledger = work.migrateLedger(clone(legacy));
+  assert.equal(ledger.countingScale, 462);
+  assert.equal(ledger.records[0].chars, 1001);
+  assert.equal(legacy.records[0].chars, 1);
+  ledger = await work.mergeIncoming(ledger, wire, wire.tasks, await work.fingerprint(wire));
+  assert.equal(ledger.records.length, 1);
+  const next = await packet(ledger, [current]);
+  assert.equal(next.workload.cumulativeChars, 1001);
+  assert.equal(next.workload.countingScale, 462);
+  ledger = await work.mergeIncoming(ledger, {...source(2),workReceipts:[receipt(wire)]},[current]);
+  assert.equal((await packet(ledger,[current])).workload.handoverChars,0);
+});
+
+test('project counting accumulates fractional work exactly through delivery and reload', async () => {
+  const current = task('ก'), manifest = source();
+  current.entries = Array.from({length:6},(_,i)=>({...clone(current.entries[0]),key:'key-'+i}));
+  let ledger = await work.mergeIncoming(work.create(),manifest,[current]);
+  for(const entry of current.entries){work.confirmed(ledger,current,{...entry,translation:'Thai'}, {translation:'',state:'pending'},manifest);entry.translation='Thai';entry.review.state='confirmed';}
+  assert.equal(ledger.records.reduce((sum,r)=>sum+r.chars,0),work.scale);
+  const next = await packet(ledger,[current]);
+  assert.equal(next.workload.totalChars,work.scale);
+  assert.equal(work.formatCount(77),'1/6');
+  assert.equal(work.formatCount(140),'10/33');
+  assert.equal(work.formatCount(231),'0.5');
+  assert.equal(work.formatCount(462),'1');
+  work.validateLedger(JSON.parse(JSON.stringify(ledger)));
+  const bad=clone(next);bad.workload.countingScale=1;
+  assert.throws(()=>work.validatePackage(bad,bad.tasks),/分母/);
+  const badCharacters=clone(next);badCharacters.workload.records[0].characterCounts.lao=1;
+  assert.throws(()=>work.validatePackage(badCharacters,badCharacters.tasks),/计数/);
+});
+
+test('project counting preserves character-only work in archive totals and receipts', async () => {
+  const {legacy,wire,current}=await legacyCountingFixture(work.draftRule,'ລາວ');
+  const raw={format:'mida-localization-ledger-archive',version:1,id:'character-archive',ledger:clone(legacy),packets:[clone(wire)]};
+  const archive=work.registerArchive(clone(raw));
+  const item={id:raw.id,ledgerId:legacy.id,chars:0,pendingChars:0,recordCount:1,archivedAt:'2026-10-15T00:00:00Z'};
+  let active=work.create();active.archives=[item];active=work.migrateLedger(active);
+  assert.equal(item.characterCounts.lao,3);
+  assert.equal(item.pendingCharacterCounts.lao,3);
+  assert.equal(work.characterProgress([current]).total.lao,3);
+  const [recounted]=await work.recountArchive(archive,item);
+  work.validatePackage(recounted,recounted.tasks);
+  assert.equal(recounted.workload.records[0].characterCounts.lao,3);
+  const persisted=JSON.parse(JSON.stringify(item));
+  work.registerArchive(clone(raw),persisted);active.archives=[persisted];
+  active=await work.mergeIncoming(active,{...source(2),workReceipts:[receipt(recounted)]},[current]);
+  assert.equal(active.archives[0].pendingCharacterCounts.lao,0);
+  assert.equal(active.archives[0].characterCounts.lao,3);
+});
+
+test('project counting upgrades previous archive recount metadata without losing old receipts', async () => {
+  const {legacy,wire,current}=await legacyCountingFixture();
+  const old=clone(wire);old.packageId='prior-gmx-archive';old.delivery={...old.delivery,id:old.packageId,revision:2,previousId:wire.packageId};old.fileVersion.revision++;
+  old.workload.countingRule=work.draftRule;
+  old.workload.records=work.recordsForRule(old.workload.records,work.draftRule);
+  for(const field of ['progressChars','totalChars','cumulativeChars','handoverChars','previousDeliveryDeltaChars','sinceSourceUpdateChars'])old.workload[field]=6;
+  work.validatePackage(old,old.tasks);
+  const {records,...summary}=old.workload;
+  const prior={...old.delivery,sourceDeliveryId:wire.delivery.id,exportedAt:old.exportedAt,fileRevision:old.fileVersion.revision,recordIds:records.map(r=>r.id),workload:summary,fingerprint:await work.fingerprint(old)};
+  const raw={format:'mida-localization-ledger-archive',version:1,id:'previous-recount-archive',ledger:clone(legacy),packets:[clone(wire)]};
+  const item={id:raw.id,ledgerId:legacy.id,chars:6,pendingChars:6,recordCount:1,archivedAt:'2026-10-15T00:00:00Z',recountedDeliveries:[clone(prior)]};
+  const archive=work.registerArchive(clone(raw),item);
+  const [next]=await work.recountArchive(archive,item);
+  assert.equal(next.workload.countingRule,work.rule);
+  assert.equal(item.recountedDeliveries.length,2);
+  assert.deepEqual(clone(item.recountedDeliveries[0]),clone(prior));
+  const persisted=JSON.parse(JSON.stringify(item));
+  work.registerArchive(clone(raw),persisted);
+  let active=work.create();active.archives=[persisted];active=work.migrateLedger(active);
+  active=await work.mergeIncoming(active,{...source(2),workReceipts:[receipt(old)]},[current]);
+  assert.equal(active.archives[0].pendingChars,0);
+});
+
+// Optional official Unicode corpus, independently downloaded for this audit.
+test('project counting matches the official Unicode normalization corpus', {skip:!process.env.UNICODE_NORMALIZATION_TEST}, () => {
+  let checked=0;
+  for(const row of fs.readFileSync(process.env.UNICODE_NORMALIZATION_TEST,'utf8').split('\n')){
+    const line=row.split('#')[0].trim();if(!line||line.startsWith('@'))continue;
+    const forms=line.split(';').slice(0,3).map(col=>String.fromCodePoint(...col.trim().split(/\s+/).map(p=>parseInt(p,16))));
+    const expected=clone(work.measure(forms[2]));
+    for(const value of forms)assert.deepEqual(clone(work.measure(value)),expected,line);
+    checked++;
+  }
+  assert.equal(checked,17507);
 });
 
 test('existing confirmed translations affect progress but not new labor', () => {

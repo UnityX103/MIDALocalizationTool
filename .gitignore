@@ -14,3 +14,4 @@ src-tauri/gen/
 *.dmg
 *.app/
 releases/
+graphify-out/

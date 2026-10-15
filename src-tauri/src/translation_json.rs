@@ -88,7 +88,10 @@ pub async fn export_translation_json(text: String, file_name: String, directory:
         temporary.write_all(text.as_bytes()).map_err(|error| error.to_string())?;
         temporary.as_file().sync_all().map_err(|error| error.to_string())?;
         temporary.persist_noclobber(&path).map_err(|error| error.to_string())?;
-        Ok(Some(json!({"path": path.to_string_lossy()})))
+        // Revealing is best-effort: the export has already been committed.
+        let reveal_warning = tauri_plugin_opener::reveal_item_in_dir(&path)
+            .err().map(|error| format!("文件已保存，但无法在文件管理器中定位：{error}"));
+        Ok(Some(json!({"path": path.to_string_lossy(), "revealWarning": reveal_warning})))
     }).await.map_err(|error| error.to_string())?
 
     }).await

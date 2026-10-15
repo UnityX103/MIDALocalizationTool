@@ -1,4 +1,6 @@
 """Manifest-only workload extension, shared with the desktop and Unity clients."""
+from word_count import RULE as COUNTING_RULE, SCALE as COUNTING_SCALE, count_units, character_counts
+from word_count_v1 import count_words as count_v1
 
 MAX_RECORDS = 100000
 MAX_INTEGER = 9007199254740991
@@ -64,8 +66,11 @@ def validate_workload(document, tasks):
             and (delivery['previousId'] is None or text(delivery['previousId']))
             and delivery['previousId'] != delivery['id'], '交付身份无效')
     require(isinstance(workload, dict) and type(workload.get('version')) is int
-            and workload['version'] == 1 and workload.get('countingRule') == 'han-v1',
+            and workload['version'] == 1 and workload.get('countingRule') in ('han-v1', 'mida-gmx-fullwidth-v1', COUNTING_RULE),
             '统计规则无效')
+    rule = workload['countingRule']
+    count = {'han-v1': count_han, 'mida-gmx-fullwidth-v1': count_v1}.get(rule, count_units)
+    require(rule != COUNTING_RULE or (integer(workload.get('countingScale')) and workload['countingScale'] == COUNTING_SCALE), '计量分母无效')
     scope = workload.get('scope')
     require(isinstance(scope, dict) and scope.get('projectId') == document.get('projectId')
             and scope.get('lineageId') == document.get('fileVersion', {}).get('lineageId')
@@ -87,7 +92,8 @@ def validate_workload(document, tasks):
         provenance = ('sourcePackageId' in record and 'sourceRevision' in record
                       and ((record['sourcePackageId'] is None and record['sourceRevision'] is None)
                            or (text(record['sourcePackageId']) and integer(record['sourceRevision'], 1))))
-        require(integer(record.get('chars')) and record['chars'] == count_han(record['sourceText'])
+        require((rule != COUNTING_RULE or (record.get('characterCounts') == character_counts(record['sourceText']) and all(integer(value) for value in record['characterCounts'].values())))
+                and integer(record.get('chars')) and record['chars'] == count(record['sourceText'])
                 and provenance and integer(record.get('taskVersion'), 1)
                 and record.get('kind') in ('translation', 'source_revision'), '工作记录字数或版本错误')
         require(record['partName'] in parts and record['language'] == scope['language'], '记录超出范围')
@@ -100,9 +106,12 @@ def validate_workload(document, tasks):
         subsets[field] = unique_strings(workload.get(field), field)
         require(subsets[field] <= by_id.keys(), field + '含未知记录')
     progress, total = 0, 0
+    progress_characters, total_characters = {name:0 for name in ('lao','khmer','myanmar')}, {name:0 for name in ('lao','khmer','myanmar')}
     for task in tasks:
         for entry in task['entries']:
-            chars = count_han(entry['currentSource'])
+            chars = count(entry['currentSource'])
+            characters = character_counts(entry['currentSource']) if rule == COUNTING_RULE else {}
+            for name, value in characters.items(): total_characters[name] += value
             total += chars
             translation = entry.get('translation')
             allows_empty = (task.get('sourceKind') == 'unity-minigame'
@@ -111,6 +120,10 @@ def validate_workload(document, tasks):
             if (entry.get('review', {}).get('state') == 'confirmed'
                     and isinstance(translation, str) and (text(translation) or allows_empty)):
                 progress += chars
+                for name, value in characters.items(): progress_characters[name] += value
+    if rule == COUNTING_RULE:
+        for field, expected_characters in (('progressCharacterCounts',progress_characters),('totalCharacterCounts',total_characters)):
+            require(workload.get(field) == expected_characters and all(integer(value) for value in workload[field].values()), field + '与任务不一致')
     def sum_chars(ids):
         return sum(by_id[identifier]['chars'] for identifier in ids)
     expected = {

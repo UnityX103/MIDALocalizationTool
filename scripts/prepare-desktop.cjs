@@ -10,5 +10,6 @@ fs.copyFileSync(path.join(root, 'translation-json.js'), path.join(destination, '
 fs.copyFileSync(path.join(root, 'preview-player.js'), path.join(destination, 'preview-player.js'));
 fs.copyFileSync(path.join(root, 'app-icon.svg'), path.join(destination, 'app-icon.svg'));
 fs.copyFileSync(path.join(root, 'import-worker.js'), path.join(destination, 'import-worker.js'));
+fs.copyFileSync(path.join(root, 'LICENSE-UNICODE.txt'), path.join(destination, 'LICENSE-UNICODE.txt'));
 
 for (const file of ['diagnostics.js', 'feedback.js', 'tutorial.js', 'tutorial-media.js', 'tutorial.css']) fs.copyFileSync(path.join(root,file),path.join(destination,file));

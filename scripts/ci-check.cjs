@@ -6,6 +6,7 @@ const { execFileSync } = require('node:child_process');
 const root = path.resolve(__dirname, '..');
 process.chdir(root);
 const run = (command, args) => execFileSync(command, args, { stdio: 'inherit' });
+run(process.platform === 'win32' ? 'python' : 'python3', ['scripts/generate-workload-counting.py', '--check']);
 const version = require('../package.json').version;
 const lock = require('../package-lock.json');
 const cargo = fs.readFileSync('src-tauri/Cargo.toml', 'utf8').split('[package]')[1].split('\n[')[0];
@@ -23,7 +24,7 @@ for (const match of fs.readFileSync('prototype.html', 'utf8').matchAll(/<script\
 for (const file of ['diagnostics.js', 'feedback.js', 'tutorial.js', 'tutorial-media.js', 'workspace-store.js', 'workload.js', 'translation-json.js', 'preview-player.js', 'import-worker.js', ...fs.readdirSync('scripts').filter(file => file.endsWith('.cjs')).map(file => `scripts/${file}`)]) run(process.execPath, ['--check', file]);
 run(process.platform === 'win32' ? 'python' : 'python3', ['-c', 'import ast,pathlib; [ast.parse(path.read_text(encoding="utf-8"), filename=str(path)) for path in pathlib.Path(".").glob("*.py")]']);
 run(process.execPath, ['scripts/prepare-desktop.cjs']);
-for (const [source, output] of [['diagnostics.js', 'diagnostics.js'], ['feedback.js', 'feedback.js'], ['tutorial.js', 'tutorial.js'], ['tutorial-media.js', 'tutorial-media.js'], ['tutorial.css', 'tutorial.css'], ['prototype.html', 'index.html'], ['workspace-store.js', 'workspace-store.js'], ['workload.js', 'workload.js'], ['translation-json.js', 'translation-json.js'], ['preview-player.js', 'preview-player.js'], ['app-icon.svg', 'app-icon.svg'], ['import-worker.js', 'import-worker.js']]) {
+for (const [source, output] of [['LICENSE-UNICODE.txt', 'LICENSE-UNICODE.txt'], ['diagnostics.js', 'diagnostics.js'], ['feedback.js', 'feedback.js'], ['tutorial.js', 'tutorial.js'], ['tutorial-media.js', 'tutorial-media.js'], ['tutorial.css', 'tutorial.css'], ['prototype.html', 'index.html'], ['workspace-store.js', 'workspace-store.js'], ['workload.js', 'workload.js'], ['translation-json.js', 'translation-json.js'], ['preview-player.js', 'preview-player.js'], ['app-icon.svg', 'app-icon.svg'], ['import-worker.js', 'import-worker.js']]) {
   if (!fs.readFileSync(source).equals(fs.readFileSync(`dist/${output}`))) throw new Error(`前端产物不匹配：${output}`);
 }
 console.log('语法、版本、更新策略及前端生成检查通过');

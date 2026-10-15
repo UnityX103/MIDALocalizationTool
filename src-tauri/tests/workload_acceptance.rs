@@ -6,6 +6,8 @@ mod media;
 mod package;
 #[path = "../src/workload.rs"]
 mod workload;
+#[path = "../src/word_count.rs"]
+mod word_count;
 #[path = "../src/workspace.rs"]
 mod workspace;
 
@@ -32,6 +34,122 @@ fn read(root: &Path, path: &Path) -> Value {
     let result = package::read_package(path, &mut stage, &mut |_, _| Ok(()));
     media::discard(&stage).unwrap();
     result.unwrap_or_else(|error| panic!("{}: {error}", path.display()))
+}
+
+#[test]
+fn project_counting_uses_shared_examples_for_acceptance() {
+    let cases: Value = serde_json::from_str(include_str!("../../fixtures/workload-counting-cases.json")).unwrap();
+    for case in cases.as_array().unwrap() {
+        let source = &case["text"];
+        let expected = case.get("units").cloned().unwrap_or_else(|| json!(case["words"].as_u64().unwrap() * workload::COUNTING_SCALE));
+        let character_counts = case.get("characterCounts").cloned().unwrap_or_else(|| json!({"lao":0,"khmer":0,"myanmar":0}));
+        let task = json!({"partName":"PartA", "language":"en", "entries":[{
+            "currentSource":source, "translation":"Translation", "review":{"state":"confirmed"}
+        }]});
+        let mut document = json!({
+            "projectId":"project", "packageId":"delivery", "fileVersion":{"lineageId":"lineage"},
+            "delivery":{"version":1,"id":"delivery","ledgerId":"ledger","revision":1,"previousId":null},
+            "workload":{"version":1,"countingRule":workload::COUNTING_RULE,"countingScale":workload::COUNTING_SCALE,
+                "progressCharacterCounts":character_counts,"totalCharacterCounts":character_counts,
+                "scope":{"projectId":"project","lineageId":"lineage","language":"en","partNames":["PartA"]},
+                "records":[{"id":"record","partName":"PartA","language":"en","key":"key","sourceText":source,
+                    "translation":"Translation","sourcePackageId":"source","sourceRevision":1,"taskVersion":1,
+                    "kind":"translation","chars":expected,"characterCounts":character_counts,"confirmedAt":"2026-10-15T00:00:00Z"}],
+                "acknowledgedRecordIds":[],"newRecordIds":["record"],"sourceUpdateRecordIds":["record"],
+                "progressChars":expected,"totalChars":expected,"cumulativeChars":expected,"handoverChars":expected,
+                "previousDeliveryDeltaChars":expected,"sinceSourceUpdateChars":expected}
+        });
+        workload::validate(&document, &[&task]).unwrap_or_else(|error| panic!("{source}: {error}"));
+        document["workload"]["records"][0]["chars"] = json!(expected.as_u64().unwrap() + 1);
+        assert!(workload::validate(&document, &[&task]).is_err());
+    }
+}
+
+#[test]
+fn project_counting_reestimates_legacy_records_without_changing_identity() {
+    let original = json!({"id":"record","sourceText":"你好，Hello 123。","chars":2});
+    let delivery = json!({"id":"old-delivery","workload":{"countingRule":"han-v1","cumulativeChars":2}});
+    let mut ledger = json!({"id":"ledger","records":[original],"deliveries":[delivery]});
+    workload::migrate_ledger(&mut ledger).unwrap();
+    assert_eq!(ledger["records"][0]["chars"], 6 * workload::COUNTING_SCALE);
+    assert_eq!(ledger["records"][0]["id"], "record");
+    assert_eq!(ledger["records"][0]["sourceText"], "你好，Hello 123。");
+    assert_eq!(ledger["deliveries"][0], delivery);
+    assert_eq!(ledger["countingRule"], workload::COUNTING_RULE);
+    workload::migrate_ledger(&mut ledger).unwrap();
+    assert_eq!(ledger["records"][0]["chars"], 6 * workload::COUNTING_SCALE);
+}
+
+#[test]
+fn project_counting_migrates_before_incremental_save_and_keeps_failed_saves_atomic() {
+    let temporary = std::env::temp_dir().canonicalize().unwrap();
+    let root = tempfile::tempdir_in(temporary).unwrap();
+    let entry = |key: &str, source: &str| json!({"key":key,"currentSource":source,"translation":"",
+        "translationAtExport":"","localizationSourceAtExport":"","speakerKey":"","speakerChineseName":"",
+        "issuesAtExport":[],"review":{"state":"pending"}});
+    let record = |id: &str, key: &str, source: &str, chars: u64| json!({"id":id,"partName":"PartA","language":"en",
+        "key":key,"sourceText":source,"translation":"Translation","sourcePackageId":"source","sourceRevision":1,
+        "taskVersion":1,"kind":"translation","chars":chars,"characterCounts":{"lao":0,"khmer":0,"myanmar":0},"confirmedAt":"2026-10-15T00:00:00Z"});
+    let original = record("old-record", "old-key", "你好，Hello 123。", 2);
+    let mut confirmed = entry("new-key", "再见，World 42。");
+    let task = json!({"partName":"PartA","language":"en","taskVersion":1,
+        "entries":[entry("old-key","你好，Hello 123。"),confirmed]});
+    let snapshot = json!({"format":"mida-localization-workspace","version":1,"tasks":[task],
+        "currentProjectId":"project","previews":{},"drafts":[],"state":{},
+        "workLedger":{"version":1,"id":"ledger","records":[original],"deliveries":[],
+            "acknowledgedIds":[],"receipts":[],"sources":[]}});
+    workspace::save(root.path(), snapshot, 0, None, None).unwrap();
+    confirmed["translation"] = json!("Goodbye");
+    confirmed["review"] = json!({"state":"confirmed"});
+    let delta = json!({"id":"ledger","countingRule":workload::COUNTING_RULE,
+        "records":[record("new-record","new-key","再见，World 42。",6 * workload::COUNTING_SCALE)]});
+    let identity = json!({"partName":"PartA","language":"en"});
+    workspace::save_entry(root.path(), identity.clone(), 0, "project", confirmed.clone(), json!({}), delta, 1).unwrap();
+    let restored = workspace::read(root.path(), "workspace", "current").unwrap();
+    let ledger = &restored["snapshot"]["workLedger"];
+    assert_eq!(ledger["countingRule"], workload::COUNTING_RULE);
+    assert_eq!(ledger["records"][0]["id"], "old-record");
+    assert_eq!(ledger["records"][0]["chars"], 6 * workload::COUNTING_SCALE);
+    assert_eq!(ledger["records"][1]["chars"], 6 * workload::COUNTING_SCALE);
+    let bad = json!({"id":"ledger","countingRule":workload::COUNTING_RULE,
+        "records":[record("wrong-count","new-key","再见，World 42。",2)]});
+    assert!(workspace::save_entry(root.path(), identity, 0, "project", confirmed, json!({}), bad, 2).is_err());
+    assert_eq!(workspace::read(root.path(), "workspace", "current").unwrap(), restored);
+}
+
+#[test]
+fn project_counting_migrates_previous_gmx_draft_with_fractional_counts() {
+    let mut ledger = json!({"id":"ledger","countingRule":"mida-gmx-fullwidth-v1",
+        "records":[{"id":"record","sourceText":"ก l'ā","chars":1}],"deliveries":[]});
+    workload::migrate_ledger(&mut ledger).unwrap();
+    assert_eq!(ledger["countingScale"], 462);
+    assert_eq!(ledger["records"][0]["chars"], 1001);
+    assert_eq!(ledger["records"][0]["id"], "record");
+    workload::validate_current_record_count(&ledger["records"][0]).unwrap();
+    ledger["records"][0]["characterCounts"]["lao"] = json!(1);
+    assert!(workload::validate_current_record_count(&ledger["records"][0]).is_err());
+}
+
+#[test]
+#[ignore = "requires UNICODE_NORMALIZATION_TEST pointing to Unicode 4.1 NormalizationTest.txt"]
+fn project_counting_matches_official_unicode_normalization_corpus() {
+    let path = std::env::var("UNICODE_NORMALIZATION_TEST").unwrap();
+    let source = std::fs::read_to_string(path).unwrap();
+    let mut checked = 0;
+    for line in source.lines() {
+        let line = line.split('#').next().unwrap().trim();
+        if line.is_empty() || line.starts_with('@') { continue; }
+        let forms: Vec<String> = line.split(';').take(3).map(|column| column.split_whitespace()
+            .map(|point| char::from_u32(u32::from_str_radix(point,16).unwrap()).unwrap()).collect()).collect();
+        let expected = word_count::measure(&forms[2]);
+        for value in forms {
+            let actual = word_count::measure(&value);
+            assert_eq!(actual.units, expected.units, "{line}");
+            assert_eq!(actual.characters, expected.characters, "{line}");
+        }
+        checked += 1;
+    }
+    assert_eq!(checked,17507);
 }
 
 // Opt-in only: the caller supplies isolated ZIPs from the real Unity round trip.

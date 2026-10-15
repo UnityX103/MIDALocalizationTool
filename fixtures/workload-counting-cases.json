@@ -1,0 +1,258 @@
+[
+  {
+    "text": "",
+    "words": 0
+  },
+  {
+    "text": "你好，World 123!\n〇𠀀𰀀",
+    "words": 8
+  },
+  {
+    "text": " \t\r\n　 ",
+    "words": 0
+  },
+  {
+    "text": "hello world",
+    "words": 2
+  },
+  {
+    "text": "don't well-known out-of-the-box",
+    "words": 3
+  },
+  {
+    "text": "can't can’t",
+    "words": 2
+  },
+  {
+    "text": "l'objectif d’Art",
+    "words": 4
+  },
+  {
+    "text": "3.14 1,000.00 -20 10%",
+    "words": 4
+  },
+  {
+    "text": "GPT4 3D",
+    "words": 2
+  },
+  {
+    "text": "ＡＢＣ１２３，。",
+    "words": 6
+  },
+  {
+    "text": "123 １２３",
+    "words": 2
+  },
+  {
+    "text": "１２３．４５ １，０００．００ １２3.４５",
+    "words": 3
+  },
+  {
+    "text": "１２３，",
+    "words": 2
+  },
+  {
+    "text": "中文English123混合",
+    "words": 5
+  },
+  {
+    "text": "“Hello”‘你好’……——",
+    "words": 3
+  },
+  {
+    "text": "“”‘’……——·‧",
+    "words": 0
+  },
+  {
+    "text": "hello, world!",
+    "words": 2
+  },
+  {
+    "text": "foo_bar a/b",
+    "words": 3
+  },
+  {
+    "text": "'hello' -- . , ! _",
+    "words": 1
+  },
+  {
+    "text": "café café",
+    "words": 2
+  },
+  {
+    "text": "가 가",
+    "words": 2
+  },
+  {
+    "text": "ᄀ́ᅡ",
+    "units": 602
+  },
+  {
+    "text": "你好​世界",
+    "words": 4
+  },
+  {
+    "text": "第3.14章",
+    "words": 3
+  },
+  {
+    "text": "、。！？",
+    "words": 4
+  },
+  {
+    "text": "hello‍world",
+    "words": 1
+  },
+  {
+    "text": "́",
+    "words": 0
+  },
+  {
+    "text": "русский français",
+    "words": 2
+  },
+  {
+    "text": "2026-10-15",
+    "words": 1
+  },
+  {
+    "text": "The quick ( \" brown \" ) fox can't jump 32,3 feet , right ?",
+    "words": 9
+  },
+  {
+    "text": "This sentence has a word count of 9 words.",
+    "words": 9
+  },
+  {
+    "text": "This sentence/text unit has a word count of 11 words.",
+    "words": 11
+  },
+  {
+    "text": "a--b a‐b a֊b",
+    "words": 3
+  },
+  {
+    "text": "l'œil l’École l’école",
+    "words": 6
+  },
+  {
+    "text": "hello world hello﻿world",
+    "words": 2
+  },
+  {
+    "text": "hello world hello world",
+    "words": 4
+  },
+  {
+    "text": "U.S.A. 3:14 3;14 a:b",
+    "words": 7
+  },
+  {
+    "text": "你好，Hello 123。",
+    "words": 6
+  },
+  {
+    "text": "กกกกกก",
+    "words": 1
+  },
+  {
+    "text": "ก",
+    "units": 77
+  },
+  {
+    "text": "ｶｶｶｶｶｶ",
+    "words": 2
+  },
+  {
+    "text": "ｶ",
+    "units": 154
+  },
+  {
+    "text": "ﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡﾡ",
+    "words": 10
+  },
+  {
+    "text": "ﾡ",
+    "units": 140
+  },
+  {
+    "text": "l'ā",
+    "words": 2
+  },
+  {
+    "text": "l'ā",
+    "words": 2
+  },
+  {
+    "text": "l'ǽ",
+    "words": 2
+  },
+  {
+    "text": "l'ǽ",
+    "words": 2
+  },
+  {
+    "text": "ລາວ",
+    "words": 0,
+    "characterCounts": {
+      "lao": 3,
+      "khmer": 0,
+      "myanmar": 0
+    }
+  },
+  {
+    "text": "ខ្មែរ",
+    "words": 0,
+    "characterCounts": {
+      "lao": 0,
+      "khmer": 4,
+      "myanmar": 0
+    }
+  },
+  {
+    "text": "မြန်မာ",
+    "words": 0,
+    "characterCounts": {
+      "lao": 0,
+      "khmer": 0,
+      "myanmar": 4
+    }
+  },
+  {
+    "text": "你好 ก ｶ 123",
+    "units": 1617
+  },
+  {
+    "text": "กก กก กก",
+    "words": 1
+  },
+  {
+    "text": "ก1ก",
+    "units": 616
+  },
+  {
+    "text": "ｶAｶ",
+    "units": 770
+  },
+  {
+    "text": "ไทยລາວ",
+    "units": 231,
+    "characterCounts": {
+      "lao": 3,
+      "khmer": 0,
+      "myanmar": 0
+    }
+  },
+  {
+    "text": "๑๒๓",
+    "words": 1
+  },
+  {
+    "text": "ก๑๒๓ก",
+    "units": 616
+  },
+  {
+    "text": "1,000 ١٬٠٠٠",
+    "words": 2
+  }
+]

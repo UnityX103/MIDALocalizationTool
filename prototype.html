@@ -151,7 +151,7 @@ body{padding:12px}
     <div class="preview-body" hidden><video controls preload="metadata" playsinline aria-label="当前片段预览视频" hidden></video><p data-preview-message class="preview-message" role="status" hidden></p></div>
   </section>
   </div>
-  <footer class="statusbar"><div class="workload-status" id="loc-data-origin"><span id="loc-work-progress" tabindex="0" title="翻译进度：当前语言空间中，当前中文原文已确认且没有编辑中草稿的汉字数。已有译文可计入进度，不代表本译者新增劳动。待校验译文不增加进度。">翻译进度：0 字</span><span id="loc-work-total" tabindex="0" title="总进度：当前语言空间全部任务的中文原文汉字数。标点、数字和英文不计。">/ 0 字</span><span id="loc-work-cumulative" tabindex="0" title="累计翻译：台账中已保存的有效翻译工作汉字数，包括被新版替换或删除的旧文；重复确认、复核与同原文润色不重复计数。待校验译文仅在点击旁边的确认按钮并保存成功后计数。功能启用前的历史劳动不推算。">累计翻译：0 字</span><button class="workload-help" id="loc-work-help" aria-label="查看翻译工作量对账字段" title="查看 ZIP 对账文件与字段">?</button></div><span id="loc-save-state" hidden>正在恢复自动保存…</span><button id="loc-app-update" hidden>检查更新</button></footer>
+  <footer class="statusbar"><div class="workload-status" id="loc-data-origin"><span id="loc-work-progress" tabindex="0" title="翻译进度：当前语言空间中，当前原文已确认且没有编辑中草稿的计量词数。已有译文可计入进度，不代表本译者新增劳动。待校验译文不增加进度。">翻译进度：0 词</span><span id="loc-work-total" tabindex="0" title="总进度：当前语言空间全部任务的原文计量词数。每个非空白全角字符计 1 词，数字（含全角数字）整体计数，其余计数严格按 GMX-V。">/ 0 词</span><span id="loc-work-cumulative" tabindex="0" title="累计翻译：台账中已保存的有效翻译工作计量词数，包括被新版替换或删除的旧文；重复确认、复核与同原文润色不重复计数。待校验译文仅在点击旁边的确认按钮并保存成功后计数。功能启用前的历史劳动不推算。">累计翻译：0 词</span><button class="workload-help" id="loc-work-help" aria-label="查看翻译工作量对账字段" title="查看 ZIP 对账文件与字段">?</button></div><span id="loc-save-state" hidden>正在恢复自动保存…</span><button id="loc-app-update" hidden>检查更新</button></footer>
   <div class="overlay" id="loc-overlay" hidden>
     <section class="dialog" role="dialog" aria-modal="true" aria-labelledby="loc-dialog-title"><div class="dialoghead"><h3 id="loc-dialog-title"></h3><button id="loc-close" aria-label="关闭弹窗">关闭</button></div><div id="loc-dialog-content"></div></section>
   </div>
@@ -405,7 +405,7 @@ function restoreWorkspace(snapshot){
  for(const candidate of saved.importedTranslations||[])importedTranslations.set(LocalizationTranslationJson.key(candidate,candidate),candidate);
  for(const draft of saved.drafts){const entry=tasks[draft.taskIndex].entries.find(entry=>entry.key===draft.key);editingEntries.set(entry,{text:draft.text,...(draft.before?{before:draft.before}:{})});}
  currentProjectId=saved.currentProjectId;currentManifest=saved.currentManifest;currentPackageId=saved.currentPackageId;fileVersion=saved.fileVersion;exportSequence=Math.max(saved.exportSequence||0,fileVersion.revision);
- workLedger=saved.workLedger||LocalizationWorkload.create();LocalizationWorkload.alignSources(workLedger,tasks,currentManifest);savedWorkIds=new Set(workLedger.records.map(record=>record.id));
+ workLedger=LocalizationWorkload.migrateLedger(saved.workLedger||LocalizationWorkload.create());LocalizationWorkload.alignSources(workLedger,tasks,currentManifest);savedWorkIds=new Set(workLedger.records.map(record=>record.id));
  Object.assign(state,initialState(),saved.state,{selected:new Set(saved.state.selected),modified:false});
  delete state.autoSaveInterval;
  delete state.collapsedPackages;delete state.expandedPackages;
@@ -438,7 +438,7 @@ function saveConfirmedEntry(task,entry,record){
  if(batch){batch.entries.set(entry.key,structuredClone(entry));if(record)batch.records.set(record.id,structuredClone(record));batch.revision=revision;return batch.operation;}
  const taskIndex=tasks.indexOf(task),targetStore=workspaceStore,projectId=currentProjectId;
  batch={entries:new Map([[entry.key,structuredClone(entry)]]),records:new Map(record?[[record.id,structuredClone(record)]]:[]),revision,ledgerId:workLedger.id};entrySaveBatches.set(task,batch);
- const operation=saveQueue.then(()=>{if(entrySaveBatches.get(task)===batch)entrySaveBatches.delete(task);if(!storageReady||clearingCache)throw new Error('本地存储不可用');return targetStore.saveEntry({partName:task.partName,language:task.language},taskIndex,projectId,[...batch.entries.values()],entrySaveView(),{id:batch.ledgerId,records:[...batch.records.values()]});});saveQueue=operation;
+ const operation=saveQueue.then(()=>{if(entrySaveBatches.get(task)===batch)entrySaveBatches.delete(task);if(!storageReady||clearingCache)throw new Error('本地存储不可用');return targetStore.saveEntry({partName:task.partName,language:task.language},taskIndex,projectId,[...batch.entries.values()],entrySaveView(),{id:batch.ledgerId,countingRule:LocalizationWorkload.rule,records:[...batch.records.values()]});});saveQueue=operation;
  batch.operation=operation.then(result=>{if(targetStore!==workspaceStore)return;for(const id of batch.records.keys())savedWorkIds.add(id);if(pendingTaskSaves.get(task)===batch.revision)pendingTaskSaves.delete(task);if(batch.revision===editRevision&&!editingEntries.size&&!pendingTaskSaves.size&&!candidateDirty.size)state.modified=false;renderSaveState();renderWorkload();if(result.saveWarning)setNotice(result.saveWarning);}).catch(error=>{if(entrySaveBatches.get(task)===batch)entrySaveBatches.delete(task);state.modified=true;renderSaveState();setNotice('片段保存失败：'+error.message+'；修改仍在窗口，点击保存重试全部进度。');});return batch.operation;
 }
 
@@ -530,16 +530,17 @@ function updatePackageCounts(){
  }
 }
 function renderWorkload(){
- const stats=LocalizationWorkload.progress(tasks,requiresWork),format=value=>value.toLocaleString('zh-CN');
+ const stats=LocalizationWorkload.progress(tasks,requiresWork),characters={progress:stats.progressCharacterCounts,total:stats.totalCharacterCounts},format=LocalizationWorkload.formatCount;
+ const suffix=counts=>{const label=LocalizationWorkload.formatCharacters(counts);return label?'；另有 '+label:'';};
  const cumulative=workLedger.records.reduce((total,record)=>total+(savedWorkIds.has(record.id)?record.chars:0),0)+(workLedger.archives||[]).reduce((sum,item)=>sum+item.chars,0);
- find('#loc-work-progress').textContent='翻译进度：'+format(stats.progressChars)+' 字';
- find('#loc-work-total').textContent='/ '+format(stats.totalChars)+' 字';
- find('#loc-work-cumulative').textContent='累计翻译：'+format(cumulative)+' 字';
+ find('#loc-work-progress').textContent='翻译进度：'+format(stats.progressChars)+' 词'+suffix(characters.progress);
+ find('#loc-work-total').textContent='/ '+format(stats.totalChars)+' 词'+suffix(characters.total);
+ find('#loc-work-cumulative').textContent='累计翻译：'+format(cumulative)+' 词'+suffix(LocalizationWorkload.totalCharacters([...workLedger.records.filter(record=>savedWorkIds.has(record.id)),...(workLedger.archives||[])]));
 }
 async function showLedgerArchives(){
  if(!canUseTranslationJson())return;
  const content=openDialog('工作量归档与继续生产');
- content.append(element('p','helper','归档保存完整明细、交付历史和当前任务的固定交付包，再创建新台账。累计字数保留，同原文不重复计数。未收到回执的历史工作仍显示为待交接，归档不会将其清零。'));
+ content.append(element('p','helper','归档保存完整明细、交付历史和当前任务的固定交付包，再创建新台账。累计词数保留，同原文不重复计数。未收到回执的历史工作仍显示为待交接，归档不会将其清零。'));
  const active=element('p','helper','当前台账：'+workLedger.records.length+' / 100000 条记录，'+workLedger.deliveries.length+' / 10000 次交付。');content.append(active);
  const rotate=element('button','primary','保存归档并创建新台账');rotate.disabled=!workLedger.records.length&&!workLedger.deliveries.length;
  rotate.addEventListener('click',async()=>{rotate.disabled=true;root.inert=true;historyBusy=true;try{
@@ -548,28 +549,29 @@ async function showLedgerArchives(){
   const {archive,next}=await LocalizationWorkload.prepareArchive(workLedger,document);await workspaceStore.archiveLedger(archive);
   snapshot.workLedger=next;snapshot.exportSequence=Math.max(snapshot.exportSequence,...archive.packets.map(packet=>packet.fileVersion.revision));const result=await workspaceStore.save(snapshot,'台账归档后');LocalizationWorkload.registerArchive(archive);saveQueue=Promise.resolve(result);restoreWorkspace(result.snapshot);historyBusy=false;closeDialog();setNotice('台账已归档，可以继续生产。历史待交接记录保留，归档列表可导出当前片段的固定 ZIP；已移出片段请核对原交付记录。');
  }catch(error){MidaDiagnostics.report(error);setNotice('归档未完成：'+error.message);rotate.disabled=false;}finally{historyBusy=false;root.inert=false;}});content.append(rotate);
- for(const item of workLedger.archives||[]){const row=element('div','dialogline');row.append(element('span','',new Date(item.archivedAt).toLocaleString()+' · '+item.chars+' 字 · 待交接 '+item.pendingChars+' 字'));
-  const download=element('button','','导出归档 ZIP');download.addEventListener('click',async()=>{download.disabled=true;root.inert=true;try{const paths=[];const archive=await workspaceStore.readArchive(item.id);for(const packet of archive.packets){if(nativeApp)await invokeNative('export_package',{document:packet,allowUnresolved:true});else{const response=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({document:packet,allowUnresolved:true}),signal:AbortSignal.timeout(60000)}),result=await response.json();if(!response.ok)throw new Error(result.error);paths.push(result.path);}}setNotice((paths.length?'归档 ZIP 已保存：'+paths.join('；')+'。':'归档交付已导出。')+'导入 Unity 回执后更新归档待交接字数。');}catch(error){MidaDiagnostics.report(error);setNotice(error.message);}finally{download.disabled=false;root.inert=false;}});const detail=element('button','','导出完整台账 JSON');detail.addEventListener('click',async()=>{detail.disabled=true;try{const archive=await workspaceStore.readArchive(item.id,true),url=URL.createObjectURL(new Blob([JSON.stringify({format:archive.format,version:archive.version,id:archive.id,ledger:archive.ledger,receiptHashes:item.receiptHashes||[],acknowledgedBits:item.acknowledgedBits||null,pendingChars:item.pendingChars},null,2)],{type:'application/json'})),link=element('a');link.href=url;link.download='台账-'+item.id+'.json';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}catch(error){MidaDiagnostics.report(error);setNotice(error.message);}finally{detail.disabled=false;}});row.append(download,detail);content.append(row);
+ for(const item of workLedger.archives||[]){const row=element('div','dialogline');row.append(element('span','',new Date(item.archivedAt).toLocaleString()+' · '+LocalizationWorkload.formatCount(item.chars)+' 词'+(LocalizationWorkload.formatCharacters(item.characterCounts)?'；'+LocalizationWorkload.formatCharacters(item.characterCounts):'')+' · 待交接 '+LocalizationWorkload.formatCount(item.pendingChars)+' 词'+(LocalizationWorkload.formatCharacters(item.pendingCharacterCounts)?'；'+LocalizationWorkload.formatCharacters(item.pendingCharacterCounts):'')));
+  const download=element('button','','导出归档 ZIP');download.addEventListener('click',async()=>{download.disabled=true;root.inert=true;try{const paths=[];const archive=await workspaceStore.readArchive(item.id,false,item);const packets=await LocalizationWorkload.recountArchive(archive,item);exportSequence=Math.max(exportSequence,...packets.map(packet=>packet.fileVersion.revision));await saveWorkspace('归档交付按新计数规则保存后');for(const packet of packets){if(nativeApp)await invokeNative('export_package',{document:packet,allowUnresolved:true});else{const response=await fetch('/api/export',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({document:packet,allowUnresolved:true}),signal:AbortSignal.timeout(60000)}),result=await response.json();if(!response.ok)throw new Error(result.error);paths.push(result.path);}}setNotice((paths.length?'归档 ZIP 已保存：'+paths.join('；')+'。':'归档交付已导出。')+'导入 Unity 回执后更新归档待交接词数。');}catch(error){MidaDiagnostics.report(error);setNotice(error.message);}finally{download.disabled=false;root.inert=false;}});const detail=element('button','','导出完整台账 JSON');detail.addEventListener('click',async()=>{detail.disabled=true;try{const archive=await workspaceStore.readArchive(item.id,true,item),url=URL.createObjectURL(new Blob([JSON.stringify({format:archive.format,version:archive.version,id:archive.id,ledger:archive.ledger,receiptHashes:item.receiptHashes||[],acknowledgedBits:item.acknowledgedBits||null,pendingChars:item.pendingChars,pendingCharacterCounts:item.pendingCharacterCounts},null,2)],{type:'application/json'})),link=element('a');link.href=url;link.download='台账-'+item.id+'.json';document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);}catch(error){MidaDiagnostics.report(error);setNotice(error.message);}finally{detail.disabled=false;}});row.append(download,detail);content.append(row);
  }
 }
 find('#loc-work-help').addEventListener('click',()=>{
  if(importInProgress||switchingSpace||clearingCache||historyBusy||updateDialogActive||appUpdateInstalling)return;
  const content=openDialog('翻译工作量与交接对账');
- content.append(element('p','helper','界面数字仅供辅助计算。准确交接数字以导出 ZIP 根目录 manifest.json 的字段为准。界面统计当前语言空间，ZIP 统计本次勾选交付的任务，两者范围可能不同。'));
+ content.append(element('p','helper','每个非空白全角字符计 1 词，数字（含全角数字）仍整体计数，其余计数按 GMX-V。规范折算保留精确分数；没有规范折词系数的文字另列字符数。已有记录按原文重计，旧交付原件保留。界面统计当前语言空间，ZIP 统计本次勾选交付的任务；准确交接数字以导出 ZIP 根目录 manifest.json 为准。'));
  const fields=element('dl','workload-fields');
  for(const [field,description] of [
-  ['workload.progressChars / workload.totalChars','当前原文已确认汉字数 / 当前原文总汉字数。'],
-  ['workload.cumulativeChars','累计有效翻译工作汉字数，包含因中文更新或删除而作废的已完成工作。'],
+  ['workload.progressChars / workload.totalChars','当前原文已确认计量词数 / 当前原文总计量词数。'],
+  ['workload.cumulativeChars','累计有效翻译工作计量词数，包含因中文更新或删除而作废的已完成工作。'],
   ['workload.handoverChars','本包尚未通过 Unity 回执确认交接的工作量；重复导出不会清零。'],
   ['workload.previousDeliveryDeltaChars','相对上一交付快照新增的工作量，不等于全部待交接量。'],
   ['workload.sinceSourceUpdateChars','各单元最近一次新任务版本导入后完成的工作量。'],
-  ['workload.scope / workload.countingRule','统计项目、谱系、语言、片段范围，以及固定汉字计数规则 han-v1。标点、数字、英文不计。'],
-  ['workload.records[]','逐笔工作明细；sourceText 是当时中文，chars 是其汉字数，id 用于去重。'],
+  ['workload.scope / workload.countingRule','统计项目、谱系、语言、片段范围。唯一扩展为非空白全角字符计 1 词；数字（含全角数字）整体计数，其余词数规则严格按 GMX-V。'],
+  ['workload.countingScale','精确计量分母。新规则固定为 462，词数 = chars 或 *Chars 字段 ÷ 462，例如 2772 ÷ 462 = 6 词。'],
+  ['workload.records[]','逐笔工作明细；sourceText 是当时中文，chars 是精确计量分子，除以 countingScale 才是词数；characterCounts 保留按规范仅计字符的数量，id 用于去重。'],
   ['delivery.id / delivery.revision','交付包身份和独立交付序号；相同内容重复导出复用同一快照。'],
   ['workReceipts[].deliveryId / workReceipts[].recordIds','位于 Unity 下一次任务 ZIP 的 manifest.json 中，标明实际接收的交付与工作记录；导入后自动确认，无需另行操作。']
  ])fields.append(element('dt','',field),element('dd','',description));
  const archivesButton=element('button','','工作量归档与继续生产');archivesButton.disabled=!canUseTranslationJson();archivesButton.addEventListener('click',showLedgerArchives);content.append(archivesButton);
- content.append(fields,element('p','helper','功能启用前的历史劳动不推算。原包已有译文、未改译文的复核和同原文润色不新增累计字数。交接确认不是付款记录；离线台账不证明真实操作者。'));
+ content.append(fields,element('p','helper','功能启用前的历史劳动不推算。原包已有译文、未改译文的复核和同原文润色不新增累计词数。交接确认不是付款记录；离线台账不证明真实操作者。'));
 });
 function updateSummary(){
  renderSaveState();
@@ -774,7 +776,7 @@ async function importTranslationJson(file=null,pastedText=null){
   selectImportedSnapshot(snapshot);
   const record=await saveTranslationSnapshot(snapshot,'导入译文 JSON');
   imported=true;
-  setNotice('已保存 '+summary+'尚未采用，未增加翻译字数。'+(record.mediaWarning||''));
+  setNotice('已保存 '+summary+'尚未采用，未增加翻译词数。'+(record.mediaWarning||''));
  });
  if(success&&imported){closeDialog();focusImportedEntry();}
  return success&&imported;
@@ -864,7 +866,7 @@ async function exportTranslationJson(includeTranslated=false,directory=null,mode
    setNotice('已复制 '+data.tasks.reduce((total,task)=>total+task.entries.length,0)+' 条原文及 AI 说明，可直接粘贴给 AI 翻译。');
   }else if(nativeApp){
    const result=await invokeNative('export_translation_json',{text,fileName,directory});
-   setNotice(result?'原文 JSON 已导出：'+result.path:'已取消导出，已有内容保持不变。');
+   setNotice(result?'原文 JSON 已导出：'+result.path+(result.revealWarning?'；'+result.revealWarning:''):'已取消导出，已有内容保持不变。');
   }else if(directory){
    const handle=await directory.getFileHandle(fileName,{create:true});
    const writable=await handle.createWritable();
@@ -888,10 +890,10 @@ async function confirmImportedTranslation(task,entry){
    requireValue(tasks.includes(task)&&task.entries.includes(entry)&&importedFor(task,entry)===candidate,'待校验译文已变化，请重新确认。');
    const savedEntry={...structuredClone(entry),translation,review:{state:'confirmed',reason:''}},draft=editingEntries.get(entry);
    const added=LocalizationWorkload.confirmed(workLedger,task,savedEntry,draft?.before||{translation:entry.translation,state:entry.review.state},currentManifest,false);
-   const targetStore=workspaceStore,delta={id:workLedger.id,records:added?[added]:[]};
+   const targetStore=workspaceStore,delta={id:workLedger.id,countingRule:LocalizationWorkload.rule,records:added?[added]:[]};
    const operation=saveQueue.catch(()=>{}).then(()=>targetStore.saveEntry({partName:task.partName,language:task.language},tasks.indexOf(task),currentProjectId,savedEntry,entrySaveView(),delta));saveQueue=operation;
    await operation;Object.assign(entry,savedEntry);if(added){workLedger.records.push(added);savedWorkIds.add(added.id);}editingEntries.delete(entry);candidateDirty.delete(candidate);importedTranslations.delete(LocalizationTranslationJson.key(task,entry));editRevision++;state.modified=Boolean(editingEntries.size||candidateDirty.size);state.cursor=task.entries.indexOf(entry);entryPageTarget=state.cursor;
-   setNotice('已采用并保存译文；'+(added?'新增 '+added.chars+' 字。':'未重复增加工作量。'));
+   setNotice('已采用并保存译文；'+(added?'新增 '+LocalizationWorkload.formatCount(added.chars)+' 词'+(LocalizationWorkload.formatCharacters(added.characterCounts)?'；'+LocalizationWorkload.formatCharacters(added.characterCounts):'')+'。':'未重复增加工作量。'));
  });
  if(success)focusImportedEntry();
 }
@@ -1155,7 +1157,7 @@ function showVersionImport(initialFile){
    stopProgress();requestId=null;
    mediaImportToken=result.mediaImportToken;if(!nativeApp){await importStore.mediaRequest('lease',{token:mediaImportToken,owner:LocalizationWorkspaceStore.mediaClient(),protect:false});leaseTimer=setInterval(()=>importStore.mediaRequest('lease',{token:mediaImportToken,owner:LocalizationWorkspaceStore.mediaClient(),protect:false}).catch(error=>setNotice('视频暂存续期失败：'+error.message)),60000);}await checkpoint();requireValue(typeof mediaImportToken==='string'&&mediaImportToken,'本机导入服务需要升级，缺少安全媒体事务标识。');
    manifest=validateManifest(result.manifest,false);incomingPreviews=validatePreviewReferences(result,manifest);
-   const allTasks=[],wireHashes=[],wireProgress={progressChars:0,totalChars:0},taskKeys=new Set();let wireHeader=null;
+   const allTasks=[],wireHashes=[],wireProgress={progressChars:0,totalChars:0,progressCharacterCounts:{lao:0,khmer:0,myanmar:0},totalCharacterCounts:{lao:0,khmer:0,myanmar:0}},taskKeys=new Set();let wireHeader=null;
    const dialogueAssets=manifest.assets.filter(item=>item.type==='localization-dialogues');
    for(const [assetIndex,asset] of dialogueAssets.entries()){
     report(60+15*assetIndex/dialogueAssets.length,'整理片段 '+(assetIndex+1)+' / '+dialogueAssets.length);await checkpoint();
@@ -1164,7 +1166,7 @@ function showVersionImport(initialFile){
     if(manifest.workload&&Array.isArray(data.tasks)){
      wireHeader={parentPackageId:data.parentPackageId,deliveryState:data.deliveryState};
      wireHashes.push(...await LocalizationWorkload.hashTasks(data.tasks));
-     const stats=LocalizationWorkload.progress(data.tasks);wireProgress.progressChars+=stats.progressChars;wireProgress.totalChars+=stats.totalChars;
+     const stats=LocalizationWorkload.progress(data.tasks,undefined,manifest.workload.countingRule);wireProgress.progressChars+=stats.progressChars;wireProgress.totalChars+=stats.totalChars;if(stats.totalCharacterCounts)for(const name of ['lao','khmer','myanmar']){wireProgress.progressCharacterCounts[name]+=stats.progressCharacterCounts[name];wireProgress.totalCharacterCounts[name]+=stats.totalCharacterCounts[name];}
     }
     allTasks.push(...await validateDialogueData(data,manifest,taskKeys,asset,checkpoint));
    }

@@ -445,8 +445,10 @@ pub fn save_entry(root: &Path, identity: Value, task_index: usize, project_id: &
     let mut confirmed_keys = Vec::new();
     for change in changes { let key = change["key"].as_str().ok_or("词条标识无效")?.to_owned();let index = *indexes.get(&key).ok_or("词条不属于片段")?;confirmed_keys.push(key);entries[index] = change; }
     let mut ledger = snapshot["workLedger"].clone();if ledger["id"] != delta["id"] { return Err("台账身份不匹配".into()); }
+    crate::workload::migrate_ledger(&mut ledger)?;
+    if delta["countingRule"] != crate::workload::COUNTING_RULE { return Err("工作记录计数规则不匹配，请更新编辑器".into()); }
     let records = ledger["records"].as_array_mut().ok_or("台账记录无效")?;let mut ids: HashSet<String> = records.iter().filter_map(|record| record["id"].as_str().map(str::to_owned)).collect();
-    for record in delta["records"].as_array().ok_or("台账增量无效")? { let id = record["id"].as_str().ok_or("记录标识无效")?;if !ids.insert(id.to_owned()) { return Err("工作记录重复".into()); }records.push(record.clone()); }
+    for record in delta["records"].as_array().ok_or("台账增量无效")? { crate::workload::validate_current_record_count(record)?;let id = record["id"].as_str().ok_or("记录标识无效")?;if !ids.insert(id.to_owned()) { return Err("工作记录重复".into()); }records.push(record.clone()); }
     if records.len() > 100_000 { return Err("请先归档工作量".into()); }
     view["workLedger"] = ledger;
     let mut candidates = snapshot["importedTranslations"].as_array().cloned().unwrap_or_default();candidates.retain(|candidate| candidate["partName"] != identity["partName"] || candidate["language"] != identity["language"] || !confirmed_keys.iter().any(|key| candidate["key"] == key.as_str()));view["importedTranslations"] = json!(candidates);

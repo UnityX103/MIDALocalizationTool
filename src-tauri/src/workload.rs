@@ -1,5 +1,12 @@
 use serde_json::Value;
 use std::collections::{HashMap, HashSet};
+#[path = "word_count.rs"]
+mod word_count;
+#[path = "word_count_v1.rs"]
+mod word_count_v1;
+
+pub const COUNTING_RULE: &str = word_count::RULE;
+pub const COUNTING_SCALE: u64 = word_count::SCALE;
 
 const MAX_INTEGER: u64 = 9_007_199_254_740_991;
 pub const FIELDS: [&str; 3] = ["delivery", "workload", "workReceipts"];
@@ -33,12 +40,53 @@ fn count_han(source: &str) -> u64 {
         0x20000..=0x2ebef | 0x2f800..=0x2fa1f | 0x30000..=0x323af)).count() as u64
 }
 
+fn counting_rule(value: &Value) -> Result<&str, String> {
+    value.as_str().filter(|rule| matches!(*rule, "han-v1" | "mida-gmx-fullwidth-v1" | COUNTING_RULE))
+        .ok_or_else(|| fail("不支持的计数规则"))
+}
+fn count(source: &str, rule: &str) -> u64 {
+    match rule { "han-v1" => count_han(source), "mida-gmx-fullwidth-v1" => word_count_v1::count(source), _ => word_count::count(source) }
+}
+
+// Re-estimate derived quantities without changing work IDs, source text or receipts.
+// Historical delivery summaries retain their original countingRule and values.
+pub fn migrate_ledger(ledger: &mut Value) -> Result<(), String> {
+    let rule = ledger.get("countingRule").map(counting_rule).transpose()?.unwrap_or("han-v1").to_owned();
+    if rule == COUNTING_RULE {
+        if ledger["countingScale"].as_u64() != Some(COUNTING_SCALE) { return Err(fail("计量分母无效")); }
+        return Ok(());
+    }
+    let records = ledger["records"].as_array_mut().ok_or_else(|| fail("台账记录无效"))?;
+    for record in records {
+        let source = record["sourceText"].as_str().ok_or_else(|| fail("记录原文无效"))?;
+        if record["chars"].as_u64() != Some(count(source, &rule)) { return Err(fail("工作记录计数不一致")); }
+        let measurement = word_count::measure(source);
+        record["chars"] = Value::from(measurement.units);
+        record["characterCounts"] = measurement.character_counts();
+    }
+    ledger["countingRule"] = Value::from(COUNTING_RULE);
+    ledger["countingScale"] = Value::from(COUNTING_SCALE);
+    Ok(())
+}
+
+pub fn validate_current_record_count(record: &Value) -> Result<(), String> {
+    let source = record["sourceText"].as_str().ok_or_else(|| fail("记录原文无效"))?;
+    if record["characterCounts"] != word_count::measure(source).character_counts() || integer(&record["chars"], 0)? != word_count::count(source) { return Err(fail("工作记录计数不一致")); }
+    Ok(())
+}
+
 #[derive(Default)]
 pub struct TaskProgress {
     parts: HashSet<String>,
     languages: HashSet<String>,
     progress: u64,
     total: u64,
+    progress_characters: [u64; 3],
+    total_characters: [u64; 3],
+    draft_progress: u64,
+    draft_total: u64,
+    legacy_progress: u64,
+    legacy_total: u64,
 }
 
 impl TaskProgress {
@@ -46,13 +94,23 @@ impl TaskProgress {
         self.parts.insert(text(&task["partName"])?.into());
         self.languages.insert(text(&task["language"])?.into());
         for entry in array(&task["entries"], 100000)? {
-            let chars = count_han(entry["currentSource"].as_str().ok_or_else(|| fail("任务原文无效"))?);
+            let source = entry["currentSource"].as_str().ok_or_else(|| fail("任务原文无效"))?;
+            let measurement = word_count::measure(source);
+            let chars = measurement.units;
+            for index in 0..3 { self.total_characters[index] += measurement.characters[index]; }
+            let legacy_chars = count_han(source);
+            let draft_chars = word_count_v1::count(source);
             self.total += chars;
+            self.legacy_total += legacy_chars;
+            self.draft_total += draft_chars;
             let allows_empty = task["sourceKind"] == "unity-minigame"
                 && task["assetProtocolVersion"].as_u64() == Some(1) && entry["allowEmpty"] == true;
             if entry["review"]["state"] == "confirmed"
                 && entry["translation"].as_str().is_some_and(|value| has_text(value) || allows_empty) {
                 self.progress += chars;
+                for index in 0..3 { self.progress_characters[index] += measurement.characters[index]; }
+                self.legacy_progress += legacy_chars;
+                self.draft_progress += draft_chars;
             }
         }
         Ok(())
@@ -94,8 +152,15 @@ pub fn validate_summary(document: &Value, progress: &TaskProgress) -> Result<(),
     if !previous.is_null() { text(previous)?; }
     if previous == &delivery["id"] { return Err(fail("交付指向自身")); }
     let workload = &document["workload"];
-    if workload["version"].as_u64() != Some(1) || workload["countingRule"] != "han-v1" {
+    if workload["version"].as_u64() != Some(1) {
         return Err(fail("不支持的计数规则"));
+    }
+    let rule = counting_rule(&workload["countingRule"])?;
+    if rule == COUNTING_RULE && workload["countingScale"].as_u64() != Some(COUNTING_SCALE) { return Err(fail("计量分母无效")); }
+    if rule == COUNTING_RULE {
+        for (field, characters) in [("progressCharacterCounts",progress.progress_characters),("totalCharacterCounts",progress.total_characters)] {
+            if workload[field] != (word_count::Measurement {units:0,characters}).character_counts() { return Err(fail("字符进度与任务不一致")); }
+        }
     }
     let scope = &workload["scope"];
     if scope["projectId"] != document["projectId"] || scope["lineageId"] != document["fileVersion"]["lineageId"] {
@@ -113,7 +178,7 @@ pub fn validate_summary(document: &Value, progress: &TaskProgress) -> Result<(),
         let source = record["sourceText"].as_str().ok_or_else(|| fail("记录原文无效"))?;
         if !record["translation"].is_string() { return Err(fail("记录译文无效")); }
         let chars = integer(&record["chars"], 0)?;
-        if chars != count_han(source) { return Err(fail("工作记录汉字数不一致")); }
+        if chars != count(source, rule) || (rule == COUNTING_RULE && record["characterCounts"] != word_count::measure(source).character_counts()) { return Err(fail("工作记录计数不一致")); }
         let source_id = record.get("sourcePackageId").ok_or_else(|| fail("缺少来源包身份"))?;
         let source_revision = record.get("sourceRevision").ok_or_else(|| fail("缺少来源版本"))?;
         if !(source_id.is_null() && source_revision.is_null()) {
@@ -140,7 +205,8 @@ pub fn validate_summary(document: &Value, progress: &TaskProgress) -> Result<(),
     let handover: u64 = records.iter().filter(|(id, _)| !acknowledged.contains(*id)).map(|(_, chars)| *chars).sum();
     let sum = |ids: &HashSet<&str>| -> u64 { ids.iter().map(|id| records[id]).sum() };
     for (field, expected) in [
-        ("progressChars", progress.progress), ("totalChars", progress.total), ("cumulativeChars", cumulative),
+        ("progressChars", match rule { "han-v1" => progress.legacy_progress, "mida-gmx-fullwidth-v1" => progress.draft_progress, _ => progress.progress }),
+        ("totalChars", match rule { "han-v1" => progress.legacy_total, "mida-gmx-fullwidth-v1" => progress.draft_total, _ => progress.total }), ("cumulativeChars", cumulative),
         ("handoverChars", handover), ("previousDeliveryDeltaChars", sum(&new_records)),
         ("sinceSourceUpdateChars", sum(&source_records)),
     ] {
