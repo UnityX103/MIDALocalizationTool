@@ -904,16 +904,19 @@ async function exportExcel(){
  if(!state.selected.size){setNotice('请先勾选要导出的任务。');return;}
  if(jumpToLatestDraft('导出 Excel'))return;
  return runTranslationJson('导出 Excel',async()=>{
+  await saveQueue;
   const selected=[...state.selected].sort((left,right)=>left-right).map(index=>tasks[index]);
-  const {bytes,entryCount,taskCount}=await LocalizationExcel.createWorkbook(selected);
+  const history=workspaceStore.translationHistory(currentProjectId,fileVersion.lineageId,workLedger);
+  const {bytes,entryCount,historicalCount,taskCount}=await LocalizationExcel.createWorkbook(selected,history);
+  const summary=taskCount+' 个任务、'+entryCount+' 条（含 '+historicalCount+' 条旧版）；可按“状态”筛选，灰底为已被覆盖或已弃用内容。';
   const fileName='localization.'+selected[0].language+'.'+Date.now()+'.xlsx';
   if(nativeApp){
    const result=await invokeNative('export_excel',{content:LocalizationExcel.toBase64(bytes),fileName});
-   setNotice(result?'Excel 已导出：'+result.path+'（'+taskCount+' 个任务，'+entryCount+' 句）':'已取消 Excel 导出。');
+   setNotice(result?'Excel 已导出：'+result.path+'；'+summary:'已取消 Excel 导出。');
   }else{
    const url=URL.createObjectURL(new Blob([bytes],{type:LocalizationExcel.mimeType})),link=document.createElement('a');
    link.href=url;link.download=fileName;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
-   setNotice('Excel 已下载：'+taskCount+' 个任务、'+entryCount+' 句，按片段分隔在同一张表中。');
+   setNotice('Excel 已下载：'+summary);
   }
  });
 }

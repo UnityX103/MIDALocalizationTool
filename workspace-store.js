@@ -177,6 +177,25 @@ class LocalizationWorkspaceStore {
   return archive;
  }
  async loadArchives(snapshot){for(const item of snapshot?.workLedger?.archives||[])await this.readArchive(item.id,true);}
+ async *translationHistory(projectId,lineageId,ledger){
+  const archiveIds=new Set((ledger.archives||[]).map(item=>item.id));
+  yield {records:ledger.records};
+  for(const backup of await this.history()){
+   if(backup.unavailable)throw new Error('历史备份无法读取，未生成不完整的 Excel：'+backup.id+'；'+backup.unavailable);
+   const record=await this.expandRecord(await this.read('backups',backup.id)),snapshot=record?.snapshot;
+   if(!snapshot)throw new Error('历史备份已被清理，请重新导出 Excel：'+backup.id);
+   if(snapshot.currentProjectId!==projectId||snapshot.fileVersion?.lineageId!==lineageId)continue;
+   for(const item of snapshot.workLedger?.archives||[])archiveIds.add(item.id);
+   yield {tasks:snapshot.tasks,records:snapshot.workLedger?.records};
+  }
+  for(const id of archiveIds){
+   const archive=await this.readArchive(id);
+   yield {records:archive.ledger.records};
+   for(const packet of archive.packets){
+    if(packet.projectId===projectId&&packet.fileVersion?.lineageId===lineageId)yield {tasks:packet.tasks};
+   }
+  }
+ }
  async recoveryInfo(){
   this.cacheEpoch=this.native?await MidaDiagnostics.invoke('workspace_cache_epoch'):(await this.read('workspace','cache-generation'))||0;
   if(this.native){const info=await MidaDiagnostics.invoke('workspace_recovery',{spaceId:this.spaceId});this.recoveryToken=info.token;return info;}
