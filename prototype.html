@@ -142,7 +142,7 @@ body{padding:12px}
       <div class="toolbar"><input id="loc-search" type="search" placeholder="搜索 key、发言人、原文或译文" aria-label="搜索对话" disabled><select id="loc-filter" aria-label="复核状态" disabled><option value="all">全部对话</option><option value="pending">只看待处理</option><option value="confirmed">已确认</option><option value="imported">待校验</option></select><span class="badge muted" id="loc-snapshot" hidden></span></div>
       <section class="sentences" id="loc-sentences" aria-label="对话列表"></section>
       <div class="notice" id="loc-notice" role="status"></div>
-      <footer class="footer"><div class="progress"><div class="tiny" id="loc-progress-text"></div><div class="track"><div id="loc-progress-bar"></div></div></div><button id="loc-next" disabled>下一处待处理 ↓</button><button id="loc-save" disabled>保存</button><button class="primary" id="loc-export" disabled>导出</button></footer>
+      <footer class="footer"><div class="progress"><div class="tiny" id="loc-progress-text"></div><div class="track"><div id="loc-progress-bar"></div></div></div><button id="loc-next" disabled>下一处待处理 ↓</button><button id="loc-save" disabled>保存</button><button id="loc-excel-export" title="将勾选片段的全部原文和当前译文导出到一个 Excel 工作簿" disabled>导出 Excel</button><button class="primary" id="loc-export" title="导出交付 ZIP" disabled>导出</button></footer>
     </main>
   </div>
   <div class="preview-divider" id="loc-preview-divider" role="separator" tabindex="0" aria-label="调整视频预览大小，拖到边缘收起，Home 键收起" aria-orientation="vertical" aria-valuemin="0" aria-valuemax="65" aria-valuenow="38" hidden></div>
@@ -160,6 +160,7 @@ body{padding:12px}
 <script src="workspace-store.js"></script>
 <script src="workload.js"></script>
 <script src="translation-json.js"></script>
+<script src="excel-export.js"></script>
 <script src="preview-player.js"></script>
 <script src="feedback.js"></script>
 <script src="tutorial-media.js"></script>
@@ -587,6 +588,7 @@ function updateSummary(){
  find('#loc-save').disabled=Boolean(historyView)||!hasTask||!storageReady;find('#loc-export').disabled=Boolean(historyView)||!hasTask||!state.selected.size;
  find('#loc-json-export').disabled=jsonBusy||Boolean(historyView)||!storageReady||![...state.selected].some(index=>tasks[index]?.entries.length);
  find('#loc-json-import').disabled=jsonBusy||Boolean(historyView)||!hasTask||!storageReady;
+ find('#loc-excel-export').disabled=!canUseTranslationJson()||![...state.selected].some(index=>tasks[index]?.entries.length);
  for(const selector of ['#loc-settings','#loc-app-update'])find(selector).disabled=Boolean(historyView)||historyBusy;
  find('#loc-task-version').hidden=!hasTask;find('#loc-snapshot').hidden=!hasTask;
  find('#loc-selection').textContent=`已选 ${state.selected.size} 个任务用于交付`;
@@ -899,6 +901,25 @@ async function confirmImportedTranslation(task,entry){
 }
 find('#loc-json-export').addEventListener('click',openTranslationExport);
 find('#loc-json-import').addEventListener('click',openTranslationImport);
+async function exportExcel(){
+ if(!canUseTranslationJson())return;
+ if(!state.selected.size){setNotice('请先勾选要导出的任务。');return;}
+ if(jumpToLatestDraft('导出 Excel'))return;
+ return runTranslationJson('导出 Excel',async()=>{
+  const selected=[...state.selected].sort((left,right)=>left-right).map(index=>tasks[index]);
+  const {bytes,entryCount,taskCount}=await LocalizationExcel.createWorkbook(selected);
+  const fileName='localization.'+selected[0].language+'.'+Date.now()+'.xlsx';
+  if(nativeApp){
+   const result=await invokeNative('export_excel',{content:LocalizationExcel.toBase64(bytes),fileName});
+   setNotice(result?'Excel 已导出：'+result.path+'（'+taskCount+' 个任务，'+entryCount+' 句）':'已取消 Excel 导出。');
+  }else{
+   const url=URL.createObjectURL(new Blob([bytes],{type:LocalizationExcel.mimeType})),link=document.createElement('a');
+   link.href=url;link.download=fileName;document.body.append(link);link.click();link.remove();setTimeout(()=>URL.revokeObjectURL(url),60000);
+   setNotice('Excel 已下载：'+taskCount+' 个任务、'+entryCount+' 句，按片段分隔在同一张表中。');
+  }
+ });
+}
+find('#loc-excel-export').addEventListener('click',exportExcel);
 async function packet(mode){
  requireValue(tasks.length&&currentProjectId&&fileVersion&&state.selected.size,'请先导入 ZIP 并勾选交付任务。');
  const document={format:'mida-localization',formatVersion:1,projectId:currentProjectId,parentPackageId:currentPackageId,fileVersion:{...fileVersion,revision:Math.max(exportSequence,fileVersion.revision)},deliveryState:mode,tasks:[...state.selected].sort((left,right)=>left-right).map(index=>structuredClone(tasks[index]))};

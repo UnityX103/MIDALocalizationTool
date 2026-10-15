@@ -7,6 +7,10 @@ fs.copyFileSync(path.join(root, 'prototype.html'), path.join(destination, 'index
 fs.copyFileSync(path.join(root, 'workspace-store.js'), path.join(destination, 'workspace-store.js'));
 fs.copyFileSync(path.join(root, 'workload.js'), path.join(destination, 'workload.js'));
 fs.copyFileSync(path.join(root, 'translation-json.js'), path.join(destination, 'translation-json.js'));
+fs.copyFileSync(path.join(root, 'excel-export.js'), path.join(destination, 'excel-export.js'));
+fs.mkdirSync(path.join(destination, 'vendor'), { recursive: true });
+fs.copyFileSync(path.join(root, 'node_modules/exceljs/dist/exceljs.min.js'), path.join(destination, 'vendor/exceljs.min.js'));
+fs.copyFileSync(path.join(root, 'node_modules/exceljs/LICENSE'), path.join(destination, 'vendor/exceljs.LICENSE'));
 fs.copyFileSync(path.join(root, 'preview-player.js'), path.join(destination, 'preview-player.js'));
 fs.copyFileSync(path.join(root, 'app-icon.svg'), path.join(destination, 'app-icon.svg'));
 fs.copyFileSync(path.join(root, 'import-worker.js'), path.join(destination, 'import-worker.js'));
