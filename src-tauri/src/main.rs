@@ -7,6 +7,7 @@ mod media;
 mod updater;
 mod import_progress;
 mod translation_json;
+mod excel_export;
 mod diagnostics;
 mod feedback;
 
@@ -432,7 +433,7 @@ fn main() {
                 None => tauri::http::Response::builder().status(404).body(Vec::new()).unwrap_or_default(),
             }
         })
-        .invoke_handler(tauri::generate_handler![diagnostics::diagnostics_info, diagnostics::diagnostics_write, diagnostics::diagnostics_snapshot, diagnostics::diagnostics_open, feedback::feedback_request, feedback::feedback_open, begin_package_import, cancel_package_import, choose_package, import_dropped_package, export_package, translation_json::choose_translation_json, translation_json::choose_translation_directory, translation_json::export_translation_json, translation_json::copy_translation_json, confirm_action, finish_exit, workspace_read, workspace_archive_ledger, workspace_recovery, workspace_recover, workspace_save, workspace_save_entry, workspace_save_task, workspace_spaces, workspace_cache_epoch, clear_all_cache, relocate_media_import, discard_media_import, get_preview_media, updater::repository_history, updater::check_app_update, updater::install_app_update])
+        .invoke_handler(tauri::generate_handler![diagnostics::diagnostics_info, diagnostics::diagnostics_write, diagnostics::diagnostics_snapshot, diagnostics::diagnostics_open, feedback::feedback_request, feedback::feedback_open, begin_package_import, cancel_package_import, choose_package, import_dropped_package, export_package, excel_export::export_excel, translation_json::choose_translation_json, translation_json::choose_translation_directory, translation_json::export_translation_json, translation_json::copy_translation_json, confirm_action, finish_exit, workspace_read, workspace_archive_ledger, workspace_recovery, workspace_recover, workspace_save, workspace_save_entry, workspace_save_task, workspace_spaces, workspace_cache_epoch, clear_all_cache, relocate_media_import, discard_media_import, get_preview_media, updater::repository_history, updater::check_app_update, updater::install_app_update])
         .on_window_event(|window, event| match event {
             tauri::WindowEvent::DragDrop(tauri::DragDropEvent::Drop { paths, .. }) => {
                 if let Ok(mut dropped) = window.state::<NativeState>().dropped_paths.lock() {

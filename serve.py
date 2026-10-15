@@ -273,7 +273,12 @@ class EditorHandler(BaseHTTPRequestHandler):
             self.reply(200, (ROOT / 'app-icon.svg').read_bytes(), 'image/svg+xml')
         elif path == '/tutorial.css':
             self.reply(200, (ROOT / 'tutorial.css').read_bytes(), 'text/css; charset=utf-8')
-        elif path in ('/tutorial.js', '/tutorial-media.js', '/diagnostics.js', '/feedback.js', '/workspace-store.js', '/workload.js', '/translation-json.js', '/preview-player.js', '/import-worker.js'):
+        elif path == '/vendor/exceljs.min.js':
+            try:
+                self.reply(200, (ROOT / 'node_modules/exceljs/dist/exceljs.min.js').read_bytes(), 'text/javascript; charset=utf-8')
+            except FileNotFoundError:
+                self.reply(404, {'error': 'Excel 组件未安装，请先运行 npm ci'})
+        elif path in ('/tutorial.js', '/tutorial-media.js', '/diagnostics.js', '/feedback.js', '/workspace-store.js', '/workload.js', '/translation-json.js', '/excel-export.js', '/preview-player.js', '/import-worker.js'):
             try:
                 self.reply(200, (ROOT / path[1:]).read_bytes(), 'text/javascript; charset=utf-8')
             except FileNotFoundError:
